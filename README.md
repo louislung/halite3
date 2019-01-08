@@ -25,7 +25,7 @@ d="python3 5_.py --RANDOM_SEED 1 --MIN_HALITE_TO_STAY 50"
 | 2_.py  | 54.14 | 775 | <ul><li>Refactor code</li><li>Ships will move based on "Expected Halite" (discounted by round). </li><li>Ships will return to shipyard near end of the game</li></ul> |
 | 1_.py  | 44.7 | 1369 | Based on starter code provided on halite website |
 
-### Explore Mechanism (implemented from 4_.py)
+### Explore mechanism (implemented from 4_.py)
 **Apply logic below to ships 1 by 1**
   
 For distance d range from 0 to MAX_EXPECTED_HALITE_ROUND away from the ship:  
