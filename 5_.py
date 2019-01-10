@@ -65,6 +65,7 @@ args = parser.parse_args()
 
 if args.RANDOM_SEED != -1:
     random.seed(args.RANDOM_SEED)
+    np.random.seed(args.RANDOM_SEED)
 
 game = hlt.Game()
 game.ready("LouisBot")
