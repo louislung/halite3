@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.ndimage.filters import generic_filter
 
 def gen_game_map(width, factor = 2):
     # higher factor means more cells have high halite
@@ -15,17 +16,38 @@ def gen_game_map(width, factor = 2):
     return m
 
 
-def gen_density_map(halite_map, distance=8, discount=1.1):
-    assert halite_map.shape[0] == halite_map.shape[1]
+def gen_density_map(halite_map, distance, discount=1.1, stat='mean'):
+    row_array = np.array([range(distance * 2 + 1), ] * (distance * 2 + 1)).transpose()
+    col_array = np.array([range(distance * 2 + 1), ] * (distance * 2 + 1))
+    distance_map = abs(row_array - distance) + abs(col_array - distance)
+    weights = (distance_map <= distance) * (float(discount) ** -distance_map)
 
-    density_map = np.zeros((halite_map.shape[0], halite_map.shape[1]))
-
-    for y in range(halite_map.shape[0]):
-        for x in range(halite_map.shape[1]):
-            distance_map = gen_distance_map(x, y, halite_map.shape[0])
-            density_map[y, x] = ((distance_map <= distance) * halite_map * (float(discount) ** -distance_map)).mean()
-
+    density_map = generic_filter(halite_map, calculate_density, footprint=weights, mode='wrap', extra_arguments=(weights, stat))
     return density_map
+
+
+def calculate_density(buffer, weights = None, stat='mean'):
+    # this function should be used with scipy.ndimage.filters.generic_fliter
+    if weights is not None:
+        weights = weights.ravel()
+        weights = weights[weights != 0]
+    else:
+        weights = np.ones(buffer.shape)
+
+    _func = {
+        'mean': np.mean,
+        'var': np.var,
+        'std': np.std,
+        'max': np.max,
+        'min': np.min,
+        'median': np.median,
+        'sum': np.sum,
+    }
+
+    assert weights.shape == buffer.shape
+    assert stat in _func.keys()
+    density = _func[stat](buffer * weights)
+    return density
 
 
 def gen_distance_map(x, y, width, turns=9999):
@@ -57,15 +79,19 @@ def gen_distance_map(x, y, width, turns=9999):
 
 # Generate a halite map
 halite_map = gen_game_map(64, 1.3)
-plt.imshow(halite_map, cmap='Blues_r', interpolation='none')
-plt.colorbar()
-plt.title('halite map')
-plt.show()
-
-# Then generate a density map see if it helps to find places with more high value cells
-for i in range(1,4):
-    density_map = gen_density_map(halite_map, i)
-    plt.imshow(density_map, cmap='Blues_r', interpolation='nearest')
+halite_map = np.random.rand(64,64)
+# halite_map[30,30] = 10
+for _ in ['1','101','201','301','401']:
+    halite_map = np.load('halite_map_turn_{}.npy'.format(_))
+    plt.imshow(halite_map, cmap='Blues_r', interpolation='none')
     plt.colorbar()
-    plt.title('density map with distance = {}'.format(i))
+    plt.title('halite map turn = {}'.format(_))
     plt.show()
+
+    # Then generate a density map see if it helps to find places with more high value cells
+    for i in range(1,4,2):
+        density_map = gen_density_map(halite_map, i)
+        plt.imshow(density_map, cmap='Blues_r', interpolation='nearest')
+        plt.colorbar()
+        plt.title('density map with distance = {}'.format(i))
+        plt.show()

@@ -31,6 +31,8 @@
 #                       Set ship status to exploit when few places >= MIN_HALITE_TO_STAY within farthest place it can go
 #                       Spawn ship will calculate the expected return now, this gives better results in a small map / 4v4 gamp
 # 2019-01-09 02:00      Updated distance_map_from_position to accounts for wrap around
+#                       Fixed RANDOM_SEED (added np.random.seed)
+#                       Will convert to dropoff now
 #####################################################################################################################
 
 
@@ -50,22 +52,28 @@ from hlt.positionals import Direction, Position
 import random
 import logging
 import numpy as np, argparse, time
+from scipy.ndimage.filters import generic_filter
+from scipy.stats import iqr
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--MAX_SHIP_ON_MAP", default=999, type=int, help="max no. of ship allowed on map")
+parser.add_argument("--MAX_SHIP_ON_MAP", default=60, type=int, help="max no. of ship allowed on map")
 parser.add_argument("--MAX_SPAWN_SHIP_TURN", default=0.75, type=float, help="stop spawn ship after this turn, range from 0 to 1")
+parser.add_argument("--MAX_MAKE_DROPOFF_TURN", default=0.9, type=float, help="stop make dropoff after this turn, range from 0 to 1")
 parser.add_argument("--HALITE_DISCOUNT_RATIO", default=1.5, type=float, help="discount ratio to calculate expected halite collected by a ship")
 parser.add_argument("--MAX_EXPECTED_HALITE_ROUND", default=8, type=int, help="max future round in calculating expected halite")
-parser.add_argument("--MIN_HALITE_TO_STAY", default=20, type=int, help="min halite for a ship to stay and collect")
+parser.add_argument("--MIN_HALITE_TO_STAY", default=50, type=int, help="min halite for a ship to stay and collect")
 parser.add_argument("--MAX_HALITE_RETURN", default=950, type=int, help="a ship will return if collected more than this number")
 parser.add_argument("--MOVE_BACK_PROB", default=0.1, type=float, help="prob that an naive exploring ship will move closer to shipyard")
 parser.add_argument("--MOVE_AROUND_WHEN_BLOCK_IN_RETURN", default=1, type=int, help="move around the ship if blocked by enemy ship during return")
-parser.add_argument("--PLACES_LEFT_FOR_EXPLOIT", default=2, type=int, help="move around the ship if blocked by enemy ship during return")
+parser.add_argument("--PLACES_LEFT_FOR_EXPLOIT", default=40, type=int, help="set ship to exploit if places left for explore <= this number")
+parser.add_argument("--MAKE_DROPOFF_DENSITY_QUANTILE", default=0.9, type=float, help="density quantile threshold to consider making a dropoff")
+parser.add_argument("--MAKE_DROPOFF_GAIN_COST_RATIO", default=3, type=float, help="make dropoff if sum of halite around > cost by this factor")
 parser.add_argument("--RANDOM_SEED", default=-1, type=int, help="random seed, -1 = no need to set the seed")
 args = parser.parse_args()
 
 if args.RANDOM_SEED != -1:
     random.seed(args.RANDOM_SEED)
+    np.random.seed(args.RANDOM_SEED)
 
 game = hlt.Game()
 game.ready("LouisBot")
@@ -74,6 +82,7 @@ class custom_constants:
     def __init__(self):
         self.MAX_SHIP_ON_MAP = args.MAX_SHIP_ON_MAP
         self.MAX_SPAWN_SHIP_TURN = int(constants.MAX_TURNS * args.MAX_SPAWN_SHIP_TURN)
+        self.MAX_MAKE_DROPOFF_TURN = int(constants.MAX_TURNS * args.MAX_MAKE_DROPOFF_TURN)
         self.HALITE_DISCOUNT_RATIO = args.HALITE_DISCOUNT_RATIO
         self.MAX_EXPECTED_HALITE_ROUND = args.MAX_EXPECTED_HALITE_ROUND
         self.MIN_HALITE_TO_STAY = args.MIN_HALITE_TO_STAY
@@ -81,11 +90,13 @@ class custom_constants:
         self.MOVE_BACK_PROB = args.MOVE_BACK_PROB
         self.MOVE_AROUND_WHEN_BLOCK_IN_RETURN = args.MOVE_AROUND_WHEN_BLOCK_IN_RETURN
         self.PLACES_LEFT_FOR_EXPLOIT = args.PLACES_LEFT_FOR_EXPLOIT
+        self.MAKE_DROPOFF_GAIN_COST_RATIO = args.MAKE_DROPOFF_GAIN_COST_RATIO
+        self.MAKE_DROPOFF_DENSITY_QUANTILE = args.MAKE_DROPOFF_DENSITY_QUANTILE
 
 cust_constants = custom_constants()
 
 ship_status = {}
-previous_halite_amount = 99999999
+previous_halite_amount = 9999999999
 row_array = np.array([range(game.game_map.height), ] * game.game_map.width).transpose()
 col_array = np.array([range(game.game_map.width), ] * game.game_map.height)
 analysis = {
@@ -201,93 +212,18 @@ def safe_move_check(id, position, against='all'):
         return False
 
 
-def expected_value(ship, target_position):
-    # assume targetpos just 1 move ahead than ship's position at this moment
-    # expected value to move to that position and collect halite
-
-    halite_map_temp = halite_map.copy()
-    ship_halite_amount = ship.halite_amount
-    ship_position = ship.position
-    expected_max_round = min(cust_constants.MAX_EXPECTED_HALITE_ROUND, constants.MAX_TURNS - game.turn_number)
-    expected = 0
-
-    round = 0
-    while round < expected_max_round:
-        move_cost = int(halite_map_temp[position_to_tuple(ship_position)] / constants.MOVE_COST_RATIO)
-        stay_reward = min(get_extract_halite(halite_map_temp[position_to_tuple(ship_position)]), constants.MAX_HALITE - ship_halite_amount)
-
-        if ship_halite_amount >= constants.MAX_HALITE:
-            # Move ship and end loop if ship reached MAX_HALITE
-            expected -= move_cost / (cust_constants.HALITE_DISCOUNT_RATIO ** round)
-            ship_halite_amount -= move_cost
-            break
-
-        if ship_position != target_position:
-            # Move ship if not at target position
-            # todo: logic is problemmatic
-            ship_position = normalize_directional_offset(ship_position, game_map.get_unsafe_moves(ship_position, target_position)[0])
-            expected -= move_cost / (cust_constants.HALITE_DISCOUNT_RATIO ** round)
-            ship_halite_amount -= move_cost
-        else:
-            if stay_reward == 0:
-                # No more halite to collect at target position
-                expected -= move_cost / (cust_constants.HALITE_DISCOUNT_RATIO ** round)
-                ship_halite_amount -= move_cost
-                break
-            # Collect halite if at target position
-            expected += stay_reward / (cust_constants.HALITE_DISCOUNT_RATIO ** round)
-            ship_halite_amount += stay_reward
-            halite_map_temp[position_to_tuple(ship_position)] -= stay_reward
-
-        round += 1
-
-    return expected
-
-
-def exploring(ship):
-    direction_list = gen_random_direction_list()
-
-    # move to the place where it give better expected halite
-    for direction in direction_list:
-        target_position = normalize_directional_offset(ship.position, direction)
-        if safe_move_check(ship.id, target_position) and me.shipyard.position != target_position \
-                and expected_value(ship, target_position) > expected_value(ship, ship.position):
-            command_ship(ship, 'move', direction)
-            return
-
-    # random move to a safe direction if current halite is in low state else stay and collect
-    # 2019-01-01: ship will move farther away from shipyard (with little prob move closer to shipyard)
-    if game_map[ship.position].halite_amount < cust_constants.MIN_HALITE_TO_STAY:
-        if me.shipyard.position == ship.position:
-            farther_away = np.array([True]*4)
-        else:
-            current_distance = game_map.calculate_distance(ship.position, me.shipyard.position)
-            farther_away = np.array(list(map(lambda d: game_map.calculate_distance(normalize_directional_offset(ship.position, d), me.shipyard.position) > current_distance, direction_list)))
-            # set a direction closer to shipyard to True with a probability
-            if np.random.rand() <= cust_constants.MOVE_BACK_PROB:
-                farther_away[(~farther_away).nonzero()[0][0]] = True
-
-        for direction in direction_list[farther_away]:
-            target_position = normalize_directional_offset(ship.position, direction)
-            if safe_move_check(ship.id, target_position) and me.shipyard.position != target_position:
-                command_ship(ship, 'move', direction)
-                return
-
-    else:
-        command_ship(ship, 'move', Direction.Still)
-        return
-
-    # None of the logic work above, so stay still
-    command_ship(ship, 'move', Direction.Still)
-    return
+def check_enemy_ship_nearby(source):
+    # return True is there is a enemy ship around
+    for p in source.get_surrounding_cardinals():
+        if game_map[p].ship is not None and game_map[p].ship.owner != me.id:
+            return True
+    return False
 
 
 def new_exploring(ship, min_halite_to_stay = cust_constants.MIN_HALITE_TO_STAY):
     # logging.debug('[new_exploring] started ship id={}, pos={}'.format(ship.id, ship.position))
     # start_time = time.time()
     # Check if the ship is being surrounded
-
-
     i = 0
     for surrounding in ship.position.get_surrounding_cardinals():
         if game_map[surrounding].is_occupied: i+=1
@@ -299,12 +235,23 @@ def new_exploring(ship, min_halite_to_stay = cust_constants.MIN_HALITE_TO_STAY):
     # Explore using expected gains
     for p in exploring_next_turns(ship.position, ship.halite_amount, cust_constants.MAX_EXPECTED_HALITE_ROUND, min_halite_to_stay):
         move = get_optimize_naive_move(ship.position, p)
-        if (move == Direction.Still and p != ship.position) or (p == me.shipyard.position):
+        if (move == Direction.Still and p != ship.position) or (p == ship_data[ship.id]['closest_dropoff_position']):
+            continue
+        elif check_enemy_ship_nearby(normalize_directional_offset(ship.position, move)):
             continue
         else:
             command_ship(ship, 'move', move)
             # logging.debug('[new_exploring] ended expected gains move={}, in {} s'.format(move, time.time() - start_time))
             return
+
+    # Explore using density
+    distance_map = distance_map_from_position(ship.position, safe=False, turns=explore_distance)
+    target = np.unravel_index(((distance_map == 1) * halite_density_map_heavy).argmax(), halite_density_map_heavy.shape)
+    move = get_optimize_naive_move(ship.position, Position(target[1],target[0]))
+    if move != Direction.Still:
+        command_ship(ship, 'move', move)
+        return
+
 
     # Fail to find any moves above, fall back to naive algorithm
     if game_map[ship.position].halite_amount < min_halite_to_stay:
@@ -317,19 +264,21 @@ def new_exploring(ship, min_halite_to_stay = cust_constants.MIN_HALITE_TO_STAY):
 def move_farther_from_shipyard(ship):
     # logging.debug('[move_farther_from_shipyard] started ship id={}'.format(ship.id))
     direction_list = gen_random_direction_list()
-    if me.shipyard.position == ship.position:
+    # dropoff = me.shipyard.position
+    dropoff = ship_data[ship.id]['closest_dropoff_position']
+    if dropoff == ship.position:
         farther_away = np.array([True] * 4)
     else:
-        current_distance = game_map.calculate_distance(ship.position, me.shipyard.position)
+        current_distance = game_map.calculate_distance(ship.position, dropoff)
         farther_away = np.array(list(map(
-            lambda d: game_map.calculate_distance(normalize_directional_offset(ship.position, d), me.shipyard.position) > current_distance, direction_list)))
+            lambda d: game_map.calculate_distance(normalize_directional_offset(ship.position, d), dropoff) > current_distance, direction_list)))
         # set a direction closer to shipyard to True with a probability
         if np.random.rand() <= cust_constants.MOVE_BACK_PROB:
             farther_away[(~farther_away).nonzero()[0][0]] = True
 
     for direction in direction_list[farther_away]:
         target_position = normalize_directional_offset(ship.position, direction)
-        if safe_move_check(ship.id, target_position) and me.shipyard.position != target_position:
+        if safe_move_check(ship.id, target_position) and dropoff != target_position:
             # logging.debug('[move_farther_from_shipyard] ended')
             return direction
 
@@ -339,7 +288,7 @@ def move_farther_from_shipyard(ship):
 
 def returning(ship):
     # move to shipyard, stay still if no safe move
-    move = get_optimize_naive_move(ship.position, me.shipyard.position)
+    move = get_optimize_naive_move(ship.position, ship_data[ship.id]['closest_dropoff_position'])
 
     # update on 2019-01-02: below is useless as get_optimize_naive_move should return safe move now
     # if move != Direction.Still and not safe_move_check(ship.id, normalize_directional_offset(ship.position, move)):
@@ -348,7 +297,7 @@ def returning(ship):
     # update on 2019-01-01: move around ship if block by enemy for 1 turn
     if move == Direction.Still and ship.id in previous_ship_data.keys() and previous_ship_data[ship.id]['originalpos'] == ship.position:
         # didn't move in last round and not going to move, check if block by others
-        unsafe_move = game_map.get_unsafe_moves(ship.position, me.shipyard.position)[0]
+        unsafe_move = game_map.get_unsafe_moves(ship.position, ship_data[ship.id]['closest_dropoff_position'])[0]
         if not safe_move_check(ship.id, normalize_directional_offset(ship.position, unsafe_move), 'own'):
             # block by own ship, continue to stay still
             pass
@@ -367,10 +316,10 @@ def returning(ship):
 
 def returning_and_end(ship):
     # move to shipyard, stay still if no safe move
-    if ship.position == me.shipyard.position:
+    if ship.position == ship_data[ship.id]['closest_dropoff_position']:
         command_ship(ship, 'move', Direction.Still)
-    elif normalize_directional_offset(ship.position, game_map.get_unsafe_moves(ship.position, me.shipyard.position)[0]) == me.shipyard.position:
-        move = game_map.get_unsafe_moves(ship.position, me.shipyard.position)[0]
+    elif normalize_directional_offset(ship.position, game_map.get_unsafe_moves(ship.position, ship_data[ship.id]['closest_dropoff_position'])[0]) == ship_data[ship.id]['closest_dropoff_position']:
+        move = game_map.get_unsafe_moves(ship.position, ship_data[ship.id]['closest_dropoff_position'])[0]
         command_ship(ship, 'move', move)
     else:
         returning(ship)
@@ -387,16 +336,16 @@ def spawn_ship():
 
     # divided by 2 as need to return to shipyard
     # divieded by 3 as assume the ship move then collect for 2 rounds for each distance
-    collect_turn = 3
+    collect_turn = 1
     explore_distance = int(int((constants.MAX_TURNS - game.turn_number -1) / 2) / (1+collect_turn))
 
-    if me.halite_amount >= constants.SHIP_COST \
+    if me_halite_left >= constants.SHIP_COST \
             and not game_map[me.shipyard.position].is_occupied \
             and game.turn_number <= cust_constants.MAX_SPAWN_SHIP_TURN \
             and len(me.get_ships()) < cust_constants.MAX_SHIP_ON_MAP \
             and places_left_to_explore > total_ships: #updated on 2019-01-06, compared with total_ships
 
-        if explore_distance > int(game_map.width / 0.75): pass
+        if explore_distance > game_map.width: pass
         else:
             distance_map = distance_map_from_position(me.shipyard.position, safe=True, turns=explore_distance)
             expected_halite = 0
@@ -407,7 +356,7 @@ def spawn_ship():
                 if expected_halite > constants.SHIP_COST: break
             if expected_halite <= constants.SHIP_COST:
                 # logging.debug('[spawn_ship] ened time={} s'.format(time.time()-start_time))
-                logging.info('[spawn_ship] stopped spawn ship coz expect gain low')
+                # logging.info('[spawn_ship] stopped spawn ship coz expect gain low')
                 return
 
         command_queue.append(me.shipyard.spawn())
@@ -415,7 +364,7 @@ def spawn_ship():
     return
 
 
-def command_ship(ship, action, move):
+def command_ship(ship, action, move=None):
     # send command of a ship to command_quene
     if action == 'move':
         # stay still if not enough cost to move
@@ -429,14 +378,16 @@ def command_ship(ship, action, move):
         # update ship_data
         ship_data[ship.id]['targetpos'] = target_position
 
+        if target_position == me.shipyard.position or target_position in me.shipyard.position.get_surrounding_cardinals():
+            ensure_shipyard_not_blocked(ship)
+
         command = ship.move(move)
+
+    elif action == 'convert_dropoff':
+        command = ship.make_dropoff()
 
     command_queue.append(command)
     ship_data[ship.id]['commanded'] = True
-
-    if target_position == me.shipyard.position or target_position in me.shipyard.position.get_surrounding_cardinals():
-        ensure_shipyard_not_blocked(ship)
-
     return
 
 
@@ -448,6 +399,14 @@ def get_move_cost(position):
         return 1
     else:
         return int(game_map[position].halite_amount / constants.MOVE_COST_RATIO)
+
+
+def get_convert_dropoff_cost(ship):
+    # return the cost for a ship to convert into dropoff at its current position
+    cost = constants.DROPOFF_COST
+    cost -= ship.halite_amount
+    cost -= game_map[ship.position].halite_amount
+    return cost
 
 
 def get_extract_halite(halite):
@@ -508,9 +467,10 @@ def exploring_next_turns(source, ship_halite, explore_distance=5, min_halite_to_
     pos = np.array([])
     pos_expected_value = np.array([])
 
-    # get distance map in numpy 2-d array
+    # get distance map from source position
     distance_map = distance_map_from_position(source, safe=True, turns=explore_distance)
 
+    # loop over every distance from source, from 0 to explore_distance
     for d in range(explore_distance+1):
         if d==0:
             masked_halite_map = np.zeros([game_map.height, game_map.width])
@@ -521,17 +481,13 @@ def exploring_next_turns(source, ship_halite, explore_distance=5, min_halite_to_
 
         if masked_halite_map.max() == 0: continue
 
-        # logging.debug('[exploring_next_turns] masked halite map.nonzero={}'.format(masked_halite_map.nonzero()))
-        #logging.debug('[exploring_next_turns] in distance={}, max halite={}'.format(d, masked_halite_map.max()))
+        # get expected value for position which has the max halite
         for p in zip(*(masked_halite_map == masked_halite_map.max()).nonzero()):
-            #logging.debug('[exploring_next_turns] source={}'.format(source))
             e = new_expected_value(source, Position(*p[::-1]), ship_halite, min_halite_to_stay)
             if e > 0:
                 pos = np.append(pos, Position(*p[::-1]))
                 pos_expected_value = np.append(pos_expected_value, e)
 
-    # logging.debug('[exploring_next_turns] pos = {}'.format(pos))
-    # logging.debug('[exploring_next_turns] pos expected val = {}'.format(pos_expected_value))
     # logging.debug('[exploring_next_turns] ended in {} s'.format(time.time()-start_time))
     return pos[(-pos_expected_value).argsort()]
 
@@ -592,6 +548,91 @@ def gen_density_map(map, distance=8, discount=1.1):
 
     return density_map
 
+
+def get_closest_dropoff_position(source, turns=None):
+    dropoffs = me.get_dropoffs()
+    dropoffs.append(me.shipyard)
+    distance = []
+    for dropoff in dropoffs:
+        distance.append(game_map.calculate_distance(source, dropoff.position))
+
+    if turns is not None and np.min(distance) > turns:
+        return None
+
+    return dropoffs[np.argmin(distance)].position
+
+
+def gen_density_map(any_map, distance=3, discount=1.1, stat='mean'):
+    row_array = np.array([range(distance * 2 + 1), ] * (distance * 2 + 1)).transpose()
+    col_array = np.array([range(distance * 2 + 1), ] * (distance * 2 + 1))
+    distance_map = abs(row_array - distance) + abs(col_array - distance)
+    weights = (distance_map <= distance) * (float(discount) ** -distance_map)
+
+    density_map = generic_filter(any_map, calculate_density, footprint=weights, mode='wrap', extra_arguments=(weights, stat))
+    return density_map
+
+
+def calculate_density(buffer, weights = None, stat='mean'):
+    # this function should be used with scipy.ndimage.filters.generic_fliter
+    if weights is not None:
+        weights = weights.ravel()
+        weights = weights[weights != 0]
+    else:
+        weights = np.ones(buffer.shape)
+
+    _func = {
+        'mean': np.mean,
+        'var': np.var,
+        'std': np.std,
+        'max': np.max,
+        'min': np.min,
+        'median': np.median,
+        'sum': np.sum,
+        'iqr': iqr,
+        '75quantile': lambda x: np.quantile(x, 0.75)
+    }
+
+    assert weights.shape == buffer.shape
+    assert stat in _func.keys()
+    density = _func[stat](buffer * weights)
+    return density
+
+
+def convert_to_dropoff_conditions_check(ship):
+    _distance = 8
+    _gain_cost_ratio = cust_constants.MAKE_DROPOFF_GAIN_COST_RATIO
+    _cost = get_convert_dropoff_cost(ship)
+
+    if me_halite_left < _cost or game.turn_number > cust_constants.MAX_MAKE_DROPOFF_TURN:
+        return
+
+    # not convert if not reach dense halite region
+    _halite_density = halite_density_map[ship.position.y, ship.position.x]
+    _halite_density_q = np.quantile(halite_density_map, cust_constants.MAKE_DROPOFF_DENSITY_QUANTILE)
+    if _halite_density < _halite_density_q:
+        return False
+
+    # not convert if gain <= cost * ratio (halite sum within nearby region)
+    _gain = ((distance_map_from_position(ship.position, safe=True, turns=int(_distance/2)) > 0) * halite_map).sum()
+    if _gain <=  _cost * _gain_cost_ratio:
+        return False
+
+    # check if nearby has no other dropoff
+    if get_closest_dropoff_position(ship.position, turns=_distance) is not None:
+        return False
+
+    # friendly ship density?
+
+    # enemy ship density?
+
+    # going to make drop off, log stat
+    logging.info('Make dropoff, ship id={}, cost={}, gain={}, halite density={}, halite density 90% quantil={}'.format(
+        ship.id, _cost, _gain, _halite_density, _halite_density_q
+    ))
+
+    return True
+
+
 ##################
 # Main game loop #
 ##################
@@ -603,6 +644,13 @@ while True:
     me = game.me
     game_map = game.game_map
     halite_map = set_halite_map()
+    halite_density_map = gen_density_map(halite_map, distance=3, discount=cust_constants.HALITE_DISCOUNT_RATIO, stat='mean')
+    halite_density_map_heavy = gen_density_map(halite_map, distance=game_map.width, discount=cust_constants.HALITE_DISCOUNT_RATIO, stat='mean')
+    me_halite_left = me.halite_amount
+
+    # cust_constants.MIN_HALITE_TO_STAY = np.quantile(halite_map, 0.5)
+    if (game.turn_number - 1) % 100 == 0 and me.id == 0:
+        np.save('halite_map_turn_{}'.format(game.turn_number), halite_map)
 
     # A command queue holds all the commands you will run this turn.
     command_queue = []
@@ -612,29 +660,33 @@ while True:
     exec_instruction()
 
     for ship in me.get_ships():
-        ship_data[ship.id] = {'ship': ship, 'originalpos': ship.position, 'targetpos': ship.position, 'commanded': None}
-
-        explore_distance = int(int((constants.MAX_TURNS - game.turn_number - game_map.calculate_distance(ship.position, me.shipyard.position)) / 2) / (1 + 2))
-        distance_map = distance_map_from_position(ship.position, False, explore_distance)
-        places_left_to_explore = (((distance_map > 0) * halite_map) >= cust_constants.MIN_HALITE_TO_STAY).sum()
+        dropoff_position = get_closest_dropoff_position(ship.position)
+        ship_data[ship.id] = {'ship': ship, 'originalpos': ship.position, 'targetpos': ship.position, 'commanded': None,
+                              'closest_dropoff_position': dropoff_position}
 
         #
         # Set ship status
         #
 
+        # Convert ship to dropoff
+        if convert_to_dropoff_conditions_check(ship):
+            ship_status[ship.id] = "convert_dropoff"
+            me_halite_left -= get_convert_dropoff_cost(ship)
+            continue
+
         # Set ship to exploring if status not found
         if ship.id not in ship_status:
             ship_status[ship.id] = "exploring"
 
-        distance = game_map.calculate_distance(ship.position, me.shipyard.position)
+        distance = game_map.calculate_distance(ship.position, ship_data[ship.id]['closest_dropoff_position'])
         if constants.MAX_TURNS - game.turn_number - 1 <= distance + int(len(me.get_ships())/2) <= constants.MAX_TURNS - game.turn_number + 1 \
-            and ship.halite_amount > game_map.calculate_distance(ship.position, me.shipyard.position):
+            and ship.halite_amount > game_map.calculate_distance(ship.position, ship_data[ship.id]['closest_dropoff_position']):
             ship_status[ship.id] = "returning_and_end"
 
         # For ship which is returning in last round
         if ship_status[ship.id] == "returning":
             # Set to exploring if returned
-            if ship.position == me.shipyard.position:
+            if ship.position == ship_data[ship.id]['closest_dropoff_position']:
                 ship_status[ship.id] = "exploring"
         # For ship which is exploring
         elif ship_status[ship.id] in ["exploring", "exploit"]:
@@ -642,16 +694,27 @@ while True:
                 ship_status[ship.id] = "returning"
 
         if ship_status[ship.id] == "exploring":
+            # To decide set a ship to exploit or not based on cells left to explore around the ship
+            explore_distance = int(int((constants.MAX_TURNS - game.turn_number - game_map.calculate_distance(ship.position, ship_data[ship.id]['closest_dropoff_position'])) / 2) / (1 + 2))
+
+            if explore_distance >= game_map.width: continue
+
+            distance_map = distance_map_from_position(ship.position, False, explore_distance)
+            places_left_to_explore = (((distance_map > 0) * halite_map) >= cust_constants.MIN_HALITE_TO_STAY).sum()
+
             if places_left_to_explore <= cust_constants.PLACES_LEFT_FOR_EXPLOIT:
-                logging.info('set ship id={} to exploit places left to explore={}'.format(ship.id, places_left_to_explore))
                 ship_status[ship.id] = "exploit"
 
     #
     # Send command according to status
     #
     for ship in me.get_ships():
+        if ship_status[ship.id] == "convert_dropoff":
+            command_ship(ship,'convert_dropoff')
+
+    for ship in me.get_ships():
         if ship_status[ship.id] == "exploring":
-            new_exploring(ship)
+            new_exploring(ship, min(cust_constants.MIN_HALITE_TO_STAY, np.quantile(halite_map,0.25)))
         elif ship_status[ship.id] == "exploit":
             new_exploring(ship, 1)
 
@@ -669,6 +732,7 @@ while True:
     spawn_ship()
 
     # Collect stat for analysis
+    # todo: need to update logic as ship will convert to dropoff now
     for ship in me.get_ships():
         if ship.id not in analysis['ship_existed_turn'].keys():
             analysis['ship_existed_turn'][ship.id] = 0
@@ -676,7 +740,7 @@ while True:
         else:
             analysis['ship_existed_turn'][ship.id] += 1
 
-        if ship.position == me.shipyard.position and me.halite_amount > previous_halite_amount:
+        if ship.position == ship_data[ship.id]['closest_dropoff_position'] and me.halite_amount > previous_halite_amount:
             analysis['ship_collected_halite'][ship.id] += me.halite_amount - previous_halite_amount
 
     # Log stat for analysis
