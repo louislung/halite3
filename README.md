@@ -16,6 +16,9 @@ d="python3 5_.py --RANDOM_SEED 1 --MIN_HALITE_TO_STAY 50"
 ./halite --replay-directory replays/ -vvv "$a" "$b" "$c" "$d"
 ```
 
+### Final ranking
+**[Pending]**
+
 ### Version details
 | Script  | Rating | Ranking | Description |
 | --- | --- | --- | --- |
@@ -41,7 +44,7 @@ For all possible cells from above:
 * If there exists a naive move to that cell, do it, if not, try next possible cell
 
 ### Dropoff mechanism (implemented from 6_.py)             
-**Pending**
+**[Pending]**
 
 ### Collision mechanism (implemented from 7_.py)
-**Pending**    
+**[Pending]**    
