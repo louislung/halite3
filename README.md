@@ -19,6 +19,9 @@ d="python3 5_.py --RANDOM_SEED 1 --MIN_HALITE_TO_STAY 50"
 ### Version details
 | Script  | Rating | Ranking | Description |
 | --- | --- | --- | --- |
+| 8_.py  | 79.31 | 76 | <ul><li>Updated make dropoff logic, will move deeper into halite dense region to make dropoff</li><li>Updated spawn ship logic, more conversative in 4p game</li></ul> |
+| 7_.py  | 78.21 | 80 | <ul><li>Will collide into enemy in 2p game</li></ul> |
+| 6_.py  | 75.7 | 94 | <ul><li>Added make dropoff logic (details in below sections)</li><li>Updated default value of MAX_SHIP_ON_MAP=200, MAX_SPAWN_SHIP_TURN=0.9</li><li>Ship will explore using gaussian filtered map</li><li>Ship will not move to cell which has enemy ship nearby while exploring</li></ul> |
 | 5_.py  | 67.58 | 250 | <ul><li>Ships with low halite do not return to shipyard at the end of game</li><li>Set ship status to exploit when few places >= MIN_HALITE_TO_STAY within farthest place it can go</li><li>Decide spawn ship or not based on expected return (i.e. if not much halite left to explore), this gives better results in a small map or 4v4 game</li></ul> |
 | 4_.py  | 65.56 | 322 | <ul><li>Implemented new exploring function (new_exploring, exploring_next_turns, get_optimize_naive_move, new_expected_value, distance_map_from_position)</li><li>New exploring mechanism (details under below sections)</li><li>Returning ship will use get_optimize_naive_move to find path with lower cost</li><li>Avoided blocking ship at shipyard, and will try to move around enemy ship during return</li><li>Stop spawning ship if cells that can be collected (>= MIN_HALITE_TO_STAY) is <= ship number</li><li>Updated default value of MAX_SHIP_ON_MAP=40, HALITE_DISCOUNT_RATIO=1.5, MAX_EXPECTED_HALITE_ROUND=8</li></ul> |
 | 3_.py  | 57.55 | 627 | <ul><li>Revamp safe_move_check, leverage mark_unsafe method of hlt</li><li>Exploring will try to move farther away from shipyard (measured by manhattan distance)</li><li>Improve returning (will try to move around if block by enemy's ship)</li><li>New function: exec_instruction, set_instruction, naive_navigate_wo_mark_unsafe, gen_random_direction_list</li></ul> |
@@ -35,4 +38,10 @@ For distance d range from 0 to MAX_EXPECTED_HALITE_ROUND away from the ship:
 * Order the possible cells to move by expected gain (descending order)  
 
 For all possible cells from above:
-* If there exists a naive move to that cell, do it, if not, try next possible cell             
+* If there exists a naive move to that cell, do it, if not, try next possible cell
+
+### Dropoff mechanism (implemented from 6_.py)             
+**Pending**
+
+### Collision mechanism (implemented from 7_.py)
+**Pending**    
