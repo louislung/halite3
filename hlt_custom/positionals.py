@@ -80,6 +80,17 @@ class Position:
         :param direction: the direction cardinal tuple
         :return: a new position moved in that direction
         """
+        if isinstance(direction,str):
+            if direction == commands.NORTH:
+                direction = Direction.North
+            elif direction == commands.EAST:
+                direction = Direction.East
+            elif direction == commands.SOUTH:
+                direction = Direction.South
+            elif direction == commands.WEST:
+                direction = Direction.West
+            elif direction == commands.STAY_STILL:
+                direction = Direction.Still
         return self + Position(*direction)
 
     def get_surrounding_cardinals(self):

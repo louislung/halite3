@@ -61,6 +61,7 @@ class Ship(Entity):
     def __init__(self, owner, id, position, halite_amount):
         super().__init__(owner, id, position)
         self.halite_amount = halite_amount
+        self.prev_halite_amount = 0
 
     @property
     def is_full(self):
@@ -103,6 +104,7 @@ class Ship(Entity):
         if ship_id in Ship.__ships.keys():    
             old_ship = Ship.__ships[ship_id]
             old_ship.position = Position(x_position, y_position)
+            old_ship.prev_halite_amount = old_ship.halite_amount
             old_ship.halite_amount = halite
             return ship_id, old_ship
         else:

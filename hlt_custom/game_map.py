@@ -69,10 +69,17 @@ class GameMap:
     Can be indexed by a position, or by a contained entity.
     Coordinates start at 0. Coordinates are normalized for you
     """
-    def __init__(self, cells, width, height):
+    def __init__(self, cells, halite_map, width, height):
         self.width = width
         self.height = height
         self._cells = cells
+        self.halite_map = halite_map
+        self.ship_halite_map = np.zeros([height, width])
+        # below map will mark by player id, since player id can be zero, use -1 for empty cells instead
+        self.ship_map = -np.ones([height,width])
+        self.ship_id_map = -np.ones([height, width])
+        self.shipyard_map = -np.ones([height, width])
+        self.dropoff_map = -np.ones([height, width])
 
     def __getitem__(self, location):
         """
@@ -166,7 +173,7 @@ class GameMap:
         return Direction.Still
 
     @staticmethod
-    def _generate(np=False):
+    def _generate():
         """
         Creates a map object from the input given by the game engine
         :return: The map object
@@ -174,16 +181,15 @@ class GameMap:
         map_width, map_height = map(int, read_input().split())
         game_map = [[None for _ in range(map_width)] for _ in range(map_height)]
         halite_map = np.zeros([map_height, map_width])
-        ship_map = np.zeros([map_height, map_width])
-        shipyard_map = np.zeros([map_height, map_width])
-        dropoff_map = np.zeros([map_height, map_width])
         for y_position in range(map_height):
             cells = read_input().split()
             for x_position in range(map_width):
                 game_map[y_position][x_position] = MapCell(Position(x_position, y_position,
                                                                     normalize=False),
                                                            int(cells[x_position]))
-        return GameMap(game_map, map_width, map_height)
+                halite_map[y_position][x_position] = int(cells[x_position])
+
+        return GameMap(game_map, halite_map, map_width, map_height)
 
     def _update(self):
         """
@@ -195,7 +201,13 @@ class GameMap:
         for y in range(self.height):
             for x in range(self.width):
                 self[Position(x, y)].ship = None
+        self.ship_halite_map = np.zeros([self.height, self.width])
+        self.ship_map = -np.ones([self.height, self.width])
+        self.ship_id_map = -np.ones([self.height, self.width])
+        self.shipyard_map = -np.ones([self.height, self.width])
+        self.dropoff_map = -np.ones([self.height, self.width])
 
         for _ in range(int(read_input())):
             cell_x, cell_y, cell_energy = map(int, read_input().split())
             self[Position(cell_x, cell_y)].halite_amount = cell_energy
+            self.halite_map[cell_y][cell_x] = cell_energy

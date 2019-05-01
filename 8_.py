@@ -455,36 +455,36 @@ def spawn_ship():
 
     # do not spawn if not enough cost
     if me_halite_left < _cost:
-        logging.info('[spawn_ship] stopped spawn ship coz not enough halite={}, cost={}'.format(me_halite_left, _cost))
+        # logging.info('[spawn_ship] stopped spawn ship coz not enough halite={}, cost={}'.format(me_halite_left, _cost))
         return
 
     # do not spawn if shipyard occupied
     if game_map[me.shipyard.position].is_occupied:
-        logging.info('[spawn_ship] stopped spawn ship coz shipyard occupied')
+        # logging.info('[spawn_ship] stopped spawn ship coz shipyard occupied')
         return
 
     # do not spawn if not enough places left to explore
     if places_left_to_explore <= total_ships: #updated on 2019-01-06, compared with total_ships
-        logging.info('[spawn_ship] stopped spawn ship coz places_left_to_explore={}, total_ships={}'.format(places_left_to_explore, total_ships))
+        # logging.info('[spawn_ship] stopped spawn ship coz places_left_to_explore={}, total_ships={}'.format(places_left_to_explore, total_ships))
         return
 
     # do not spawn if my ships > MAX_SHIP_ON_MAP
     if len(me.get_ships()) > cust_constants.MAX_SHIP_ON_MAP:
-        logging.info('[spawn_ship] stopped spawn ship coz reached MAX_SHIP_ON_MAP'.format(len(me.get_ships())))
+        # logging.info('[spawn_ship] stopped spawn ship coz reached MAX_SHIP_ON_MAP'.format(len(me.get_ships())))
         return
 
     # do not spawn if turn > MAX_SPAWN_SHIP_TURN
     if game.turn_number > cust_constants.MAX_SPAWN_SHIP_TURN:
-        logging.info('[spawn_ship] stopped spawn ship coz reached MAX_SPAWN_SHIP_TURN')
+        # logging.info('[spawn_ship] stopped spawn ship coz reached MAX_SPAWN_SHIP_TURN')
         return
 
     if np.quantile(halite_map, cust_constants.MIN_QUANTILE_TO_SPAWN) <= cust_constants.MIN_HALITE_QUANTILE_TO_SPAWN:
-        logging.info('[spawn_ship] stopped spawn ship coz halite at {} quantile={}'.format(cust_constants.MIN_QUANTILE_TO_SPAWN, np.quantile(halite_map, cust_constants.MIN_QUANTILE_TO_SPAWN)))
+        # logging.info('[spawn_ship] stopped spawn ship coz halite at {} quantile={}'.format(cust_constants.MIN_QUANTILE_TO_SPAWN, np.quantile(halite_map, cust_constants.MIN_QUANTILE_TO_SPAWN)))
         return
 
     # if 2p game, maintains ship number >= enemy + 5
     if len(game.players) == 2 and len(me.get_ships()) - (total_ships - len(me.get_ships())) <= 5:
-        logging.info('[spawn_ship] spawn in 2p game!')
+        # logging.info('[spawn_ship] spawn in 2p game!')
         command_queue.append(me.shipyard.spawn())
         # logging.debug('[spawn_ship] ened time={} s'.format(time.time() - start_time))
         return
@@ -502,12 +502,12 @@ def spawn_ship():
             expected_halite += max_halite / constants.EXTRACT_RATIO + max_halite / (constants.EXTRACT_RATIO**2) + max_halite / (constants.EXTRACT_RATIO**3)
             if expected_halite > constants.SHIP_COST * cust_constants.SPAWN_GAIN_COST_RATIO: break
 
-        logging.info('[spawn_ship] explore_distance={}, expected_halite={}, d={}'.format(explore_distance, expected_halite, d))
+        # logging.info('[spawn_ship] explore_distance={}, expected_halite={}, d={}'.format(explore_distance, expected_halite, d))
 
         if expected_halite <= constants.SHIP_COST * cust_constants.SPAWN_GAIN_COST_RATIO:
             return
 
-    logging.info('[spawn_ship] spawn')
+    # logging.info('[spawn_ship] spawn')
     command_queue.append(me.shipyard.spawn())
     # logging.debug('[spawn_ship] ened time={} s'.format(time.time() - start_time))
     return
@@ -798,34 +798,34 @@ def convert_to_dropoff_conditions_check(ship):
 
     # check MAX_MAKE_DROPOFF_TURN
     if game.turn_number > cust_constants.MAX_MAKE_DROPOFF_TURN:
-        logging.debug('[convert_to_dropoff_conditions_check] reached MAX_MAKE_DROPOFF_TURN')
+        # logging.debug('[convert_to_dropoff_conditions_check] reached MAX_MAKE_DROPOFF_TURN')
         return 0
 
     if make_dropoff and me.has_ship(make_dropoff):
-        logging.debug('[convert_to_dropoff_conditions_check] shipid={} other ship will make dropoff'.format(ship.id))
+        # logging.debug('[convert_to_dropoff_conditions_check] shipid={} other ship will make dropoff'.format(ship.id))
         return 0
 
     # not convert if not reach dense halite region
     _halite_density = halite_density_map[ship.position.y, ship.position.x]
     _halite_density_q = np.quantile(halite_density_map, cust_constants.MAKE_DROPOFF_DENSITY_QUANTILE)
     if _halite_density < _halite_density_q:
-        logging.debug('[convert_to_dropoff_conditions_check] shipid={} low halite density={}, quantile={}'.format(ship.id, _halite_density, _halite_density_q))
+        # logging.debug('[convert_to_dropoff_conditions_check] shipid={} low halite density={}, quantile={}'.format(ship.id, _halite_density, _halite_density_q))
         return 0
 
     # not convert if gain <= cost * ratio (halite sum within nearby region)
     _gain = ((distance_map_from_position(ship.position, safe=True, turns=cust_constants.DROPOFF_GAIN_DISTANCE) > 0) * halite_map).sum()
     if _gain <=  _cost * _gain_cost_ratio:
-        logging.debug('[convert_to_dropoff_conditions_check] shipid={} low gain={}'.format(ship.id, _gain))
+        # logging.debug('[convert_to_dropoff_conditions_check] shipid={} low gain={}'.format(ship.id, _gain))
         return 0
 
     # check if nearby has no other dropoff
     if get_closest_dropoff_position(ship.position, turns=cust_constants.DROPOFF_MIN_DISTANCE) is not None:
-        logging.debug('[convert_to_dropoff_conditions_check] shipid={} nearby has dropoff'.format(ship.id))
+        # logging.debug('[convert_to_dropoff_conditions_check] shipid={} nearby has dropoff'.format(ship.id))
         return 0
 
     # check enough cost
     if me_halite_left < _cost:
-        logging.debug('[convert_to_dropoff_conditions_check] shipid={} not enough halite'.format(ship.id))
+        # logging.debug('[convert_to_dropoff_conditions_check] shipid={} not enough halite'.format(ship.id))
         if me_halite_left >= _cost * 0.8:
             # not make dropoff only because of not enough halite, should save halite
             return -1
@@ -837,9 +837,9 @@ def convert_to_dropoff_conditions_check(ship):
     # enemy ship density?
 
     # going to make drop off, log stat
-    logging.info('Make dropoff, ship id={}, cost={}, gain={}, halite density={}, halite density 90% quantil={}'.format(
-        ship.id, _cost, _gain, _halite_density, _halite_density_q
-    ))
+    # logging.info('Make dropoff, ship id={}, cost={}, gain={}, halite density={}, halite density 90% quantil={}'.format(
+    #     ship.id, _cost, _gain, _halite_density, _halite_density_q
+    # ))
 
     return 1
 
@@ -869,30 +869,30 @@ while True:
     game.update_frame()
     me = game.me
     game_map = game.game_map
-    logging.debug('extract from game time={} s'.format(time.time() - start_time))
+    # logging.debug('extract from game time={} s'.format(time.time() - start_time))
 
     start_time = time.time()
     halite_map = set_halite_map()
-    logging.debug('set halite map time={} s'.format(time.time() - start_time))
+    # logging.debug('set halite map time={} s'.format(time.time() - start_time))
 
     start_time = time.time()
     ship_map = set_ship_map()
-    logging.debug('set ship map time={} s'.format(time.time() - start_time))
+    # logging.debug('set ship map time={} s'.format(time.time() - start_time))
 
     start_time = time.time()
     halite_density_map = gen_density_map(halite_map, distance=cust_constants.HALITE_DENSITY_DISTANCE, discount=cust_constants.HALITE_DISCOUNT_RATIO, stat='mean')
-    logging.debug('set halite density map time={} s'.format(time.time() - start_time))
+    # logging.debug('set halite density map time={} s'.format(time.time() - start_time))
 
     start_time = time.time()
     inspired_halite_map = set_inspired_halite_map(halite_map, ship_map, constants.INSPIRATION_SHIP_COUNT, 1 + constants.INSPIRED_BONUS_MULTIPLIER, constants.INSPIRED_EXTRACT_RATIO)
-    logging.debug('set inspired_halite_map time={} s'.format(time.time() - start_time))
+    # logging.debug('set inspired_halite_map time={} s'.format(time.time() - start_time))
 
     start_time = time.time()
     if cust_constants.USE_INSPIRED_HALITE_MAP:
         halite_gaussian_map = gaussian_filter(inspired_halite_map, cust_constants.HALITE_GAUSSIAN_DISTANCE)
     else:
         halite_gaussian_map = gaussian_filter(halite_map, cust_constants.HALITE_GAUSSIAN_DISTANCE)
-    logging.debug('set halite gaussian_filter map time={} s'.format(time.time() - start_time))
+    # logging.debug('set halite gaussian_filter map time={} s'.format(time.time() - start_time))
 
     start_time = time.time()
     me_halite_left = me.halite_amount
@@ -912,13 +912,13 @@ while True:
     for i in game.players:
         total_ships += len(game.players[i].get_ships())
 
-    logging.info('Kurtosis={}'.format(kurtosis(reject_outliers(halite_map, 0.05, 0.95), None)))
-    for q in [0,0.1,0.2,0.25,0.3,0.4,0.5,0.6,0.7,0.75,0.8,0.9,1]:
-        logging.info('{}: {}'.format(q,np.quantile(halite_map,q)))
+    # logging.info('Kurtosis={}'.format(kurtosis(reject_outliers(halite_map, 0.05, 0.95), None)))
+    # for q in [0,0.1,0.2,0.25,0.3,0.4,0.5,0.6,0.7,0.75,0.8,0.9,1]:
+        # logging.info('{}: {}'.format(q,np.quantile(halite_map,q)))
 
     # set instuction from previous round
     exec_instruction()
-    logging.debug('prepare time={} s'.format(time.time()-start_time))
+    # logging.debug('prepare time={} s'.format(time.time()-start_time))
     start_time = time.time()
     for ship in me.get_ships():
         dropoff_position = get_closest_dropoff_position(ship.position)
@@ -979,10 +979,10 @@ while True:
             # places_left_to_explore = (((distance_map > 0) * halite_map) >= cust_constants.MIN_HALITE_TO_STAY).sum()
 
             if np.nanquantile(_halite_map, 0.75) < cust_constants.MIN_HALITE_TO_STAY:
-                logging.info('set to exploit ship id={}, 75 quantile={}'.format(ship.id, np.nanquantile(_halite_map, 0.75)))
+                # logging.info('set to exploit ship id={}, 75 quantile={}'.format(ship.id, np.nanquantile(_halite_map, 0.75)))
                 ship_status[ship.id] = "exploit"
 
-    logging.debug('set ship status time={} s'.format(time.time() - start_time))
+    # logging.debug('set ship status time={} s'.format(time.time() - start_time))
     start_time = time.time()
     #
     # Send command according to status
@@ -990,16 +990,16 @@ while True:
     for ship in me.get_ships():
         if ship_status[ship.id] == "convert_dropoff":
             commanded = custom_map_exploring(ship, halite_map, 2)
-            logging.debug('send deeper shipid={}'.format(ship.id))
+            # logging.debug('send deeper shipid={}'.format(ship.id))
             if not commanded and me_halite_left >= get_convert_dropoff_cost(ship):
                 command_ship(ship,'convert_dropoff')
                 make_dropoff = False
                 save_halite_for_dropoff = False
                 me_halite_left -= get_convert_dropoff_cost(ship)
-                logging.debug('convert dropoff shipid={}'.format(ship.id))
+                # logging.debug('convert dropoff shipid={}'.format(ship.id))
                 # break as only one ship can make dropoff each turn
                 break
-    logging.debug('convert dropoff time={} s'.format(time.time() - start_time))
+    # logging.debug('convert dropoff time={} s'.format(time.time() - start_time))
     start_time = time.time()
     _i = 1
 
@@ -1010,13 +1010,13 @@ while True:
         elif ship_status[ship.id] == "exploit":
             _i += 1
             new_exploring(ship, 1)
-    logging.debug('exploring ship={}, time={} s, avg={} s'.format(_i, round(time.time() - start_time,4), round((time.time() - start_time) / _i, 4)))
+    # logging.debug('exploring ship={}, time={} s, avg={} s'.format(_i, round(time.time() - start_time,4), round((time.time() - start_time) / _i, 4)))
     start_time = time.time()
 
     for ship in me.get_ships():
         if ship_status[ship.id] == "returning":
             returning(ship)
-    logging.debug('returning time={} s'.format(time.time() - start_time))
+    # logging.debug('returning time={} s'.format(time.time() - start_time))
     start_time = time.time()
 
     for ship in me.get_ships():
@@ -1025,11 +1025,11 @@ while True:
         # else:
         #     logging.error('A ship without status is found, set to stay still')
         #     command_ship(ship, 'move', Direction.Still)
-    logging.debug('returning_and_end time={} s'.format(time.time() - start_time))
+    # logging.debug('returning_and_end time={} s'.format(time.time() - start_time))
     start_time = time.time()
 
     spawn_ship()
-    logging.debug('spawn ship time={} s'.format(time.time() - start_time))
+    # logging.debug('spawn ship time={} s'.format(time.time() - start_time))
     start_time = time.time()
 
     # Collect stat for analysis
@@ -1045,24 +1045,24 @@ while True:
 
     # Log stat for analysis
     if game.turn_number == constants.MAX_TURNS:
-        logging.info('max turn reached')
+        # logging.info('max turn reached')
 
-        for k in analysis['ship_existed_turn'].keys():
-            logging.info('ship id={}\texisted turn={}\tcollected halite={}\taverage halite collected per turn={}'.format(
-                k, analysis['ship_existed_turn'][k], analysis['ship_collected_halite'][k], analysis['ship_collected_halite'][k] / (analysis['ship_existed_turn'][k] + 0.01)))
+        # for k in analysis['ship_existed_turn'].keys():
+            # logging.info('ship id={}\texisted turn={}\tcollected halite={}\taverage halite collected per turn={}'.format(
+            #     k, analysis['ship_existed_turn'][k], analysis['ship_collected_halite'][k], analysis['ship_collected_halite'][k] / (analysis['ship_existed_turn'][k] + 0.01)))
 
         halite_left = 0
         for ship in me.get_ships():
             halite_left += ship.halite_amount
-        logging.info('For ships left on map, no. of ships={}, halite in ships={}'.format(len(me.get_ships()), halite_left))
+        # logging.info('For ships left on map, no. of ships={}, halite in ships={}'.format(len(me.get_ships()), halite_left))
 
 
     # Record value
     previous_halite_amount = me.halite_amount
     previous_ship_data = ship_data.copy()
-    logging.debug('collect stat time={} s'.format(time.time() - start_time))
-    logging.debug('OVERALL time={} s'.format(time.time() - overall_start_time))
+    # logging.debug('collect stat time={} s'.format(time.time() - start_time))
+    # logging.debug('OVERALL time={} s'.format(time.time() - overall_start_time))
     # Send your moves back to the game environment, ending this turn.
     logging.debug(command_queue)
-    logging.debug(ship_status)
+    # logging.debug(ship_status)
     game.end_turn(command_queue)
