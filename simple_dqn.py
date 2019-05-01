@@ -148,16 +148,16 @@ def get_halite_command(turn_limit=300, replay_directory='', parameters = {}):
 # parameter
 _parameters = {
     'epsilon_train': 0.01,
-    'epsilon_decay_period': 25000,
+    'epsilon_decay_period': 250000,
     'batch_size': 32,
     'discount': 0.99,
-    'min_replay_history': 2000,
-    'target_update_period': 800,
+    'min_replay_history': 20000,
+    'target_update_period': 8000,
     'training_steps': 0,
     'folder': 'simple_dqn'
 }
 
-max_training_steps = 50000
+max_training_steps = 5000000
 games_num = 0
 actions_list = np.array([commands.NORTH, commands.EAST, commands.SOUTH, commands.WEST, commands.STAY_STILL])
 

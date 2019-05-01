@@ -58,9 +58,9 @@ q_network = keras.models.load_model(os.path.join(folder, 'q_network'))
 target_network = keras.models.load_model(os.path.join(folder, 'target_network'))
 
 # Read replay
-if os.path.exists('state_replay.snappy.parquet') and os.path.exists('ship_replay.snappy.parquet'):
-    state_replay = np.load('state_replay.npy')
-    ship_replay = np.load('ship_replay.npy')
+if os.path.exists(os.path.join(folder, 'state_replay.npy')) and os.path.exists(os.path.join(folder, 'ship_replay.npy')):
+    state_replay = np.load(os.path.join(folder, 'state_replay.npy'))
+    ship_replay = np.load(os.path.join(folder, 'ship_replay.npy'))
 else:
     state_replay = np.array([])
     ship_replay = np.array([])
@@ -231,7 +231,7 @@ while True:
     if game.turn_number == constants.MAX_TURNS:
         np.save(os.path.join(folder, 'state_replay.npy'), state_replay)
         np.save(os.path.join(folder, 'ship_replay.npy'), ship_replay)
-        # logging.info('saved replay')
+        logging.info('saved replay')
 
         q_network.save(os.path.join(folder, 'q_network'))
         target_network.save(os.path.join(folder, 'target_network'))
