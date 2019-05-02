@@ -1,17 +1,19 @@
 from hlt_custom import commands
-import random, time, os, sys, subprocess, logging, datetime
+import random, time, os, sys, subprocess, logging, datetime, argparse, time
 import numpy as np
+from scipy.sparse import csr_matrix
 import keras
 from keras.models import Sequential
 from keras.layers import Dense, Conv2D, Flatten
 import keras.backend as K
+
 
 ###########
 # Network #
 ###########
 class DQN(object):
 
-    def __init__(self, input=(12, 32, 32), output=5):
+    def __init__(self, input=(11, 32, 32), output=5):
         self.input = input
         self.output = output
 
@@ -24,6 +26,15 @@ class DQN(object):
         self.optimizer = keras.optimizers.RMSprop(lr=0.00025, decay=0.95, epsilon=0.00001)
         self.model.compile(loss=keras.losses.mean_squared_error, optimizer=self.optimizer)
 
+    def load_model(self, path):
+        self.model = keras.models.load_model(path)
+
+    def fit(self, x, y, **kwargs):
+        self.model.fit(x, y, **kwargs)
+
+    def save(self, path):
+        self.model.save(path)
+
 
 ###################
 # Custom function #
@@ -32,9 +43,10 @@ def preprocess(raw_state, me_id, turn_number, constants):
     """
     return processed state
     note the last one must be ship_id state
+    note using sparse matrix could reduce >50% size of replay e.g. from 206mb to 62mb for 1100 records in state_replay.npy
     :param raw_state: dictionary of 2d ndarray
     :param me_id: int
-    :return: 3d ndarray
+    :return: 1d ndarray of dtype object, store nxn csr_matrix
     """
     halite_map = raw_state['halite_map']
     ship_halite_map = raw_state['ship_halite_map']
@@ -54,28 +66,28 @@ def preprocess(raw_state, me_id, turn_number, constants):
 
     processed_state = []
     # one hot ship state
-    processed_state.append((ship_map == me_id) * 1.) # 0
-    processed_state.append((ship_map != me_id) * 1.) # 1
+    processed_state.append(csr_matrix((ship_map == me_id) * 1.)) # 0
+    processed_state.append(csr_matrix(((ship_map != me_id) & (ship_map != -1)) * 1.)) # 1
     # one hot shipyard state
-    processed_state.append((shipyard_map == me_id) * 1.) # 2
-    processed_state.append((shipyard_map != me_id) * 1.) # 3
+    processed_state.append(csr_matrix((shipyard_map == me_id) * 1.)) # 2
+    processed_state.append(csr_matrix(((shipyard_map != me_id) & (shipyard_map != -1)) * 1.)) # 3
     # one hot dropoff state
-    processed_state.append((dropoff_map == me_id) * 1.) # 4
-    processed_state.append((dropoff_map != me_id) * 1.) # 5
+    processed_state.append(csr_matrix((dropoff_map == me_id) * 1.)) # 4
+    processed_state.append(csr_matrix(((dropoff_map != me_id) & (dropoff_map != -1)) * 1.)) # 5
     # ship halite state
-    processed_state.append((ship_map == me_id) * ship_halite_map / constants.MAX_HALITE) # 6
-    processed_state.append((ship_map != me_id) * ship_halite_map / constants.MAX_HALITE) # 7
+    processed_state.append(csr_matrix((ship_map == me_id) * ship_halite_map / constants.MAX_HALITE)) # 6
+    processed_state.append(csr_matrix(processed_state[1].toarray() * ship_halite_map / constants.MAX_HALITE)) # 7
     # halite state
-    processed_state.append(halite_map / constants.MAX_HALITE) # 8
+    processed_state.append(csr_matrix(halite_map / constants.MAX_HALITE)) # 8
     # moving cost state
-    processed_state.append(np.trunc(np.maximum(halite_map / constants.MOVE_COST_RATIO, 1) - ((halite_map == 0) * 1.)) / constants.MAX_HALITE) # 9
+    processed_state.append(csr_matrix(np.trunc(np.maximum(halite_map / constants.MOVE_COST_RATIO, 1) - ((halite_map == 0) * 1.)) / constants.MAX_HALITE)) # 9
     # remaining round
-    processed_state.append(np.ones(ship_map.shape) * (constants.MAX_TURNS - turn_number))  # 10
+    processed_state.append(csr_matrix(np.ones(ship_map.shape) * (constants.MAX_TURNS - turn_number)))  # 10
 
     # todo add inspired halite / ship state / move cost
 
     # ship id state (this is used to center the matrix for different ship)
-    processed_state.append( (-np.ones(ship_id_map.shape) * (ship_map != me_id)) + ship_id_map * (ship_map == me_id)) # +1
+    processed_state.append(csr_matrix((-np.ones(ship_id_map.shape) * (ship_map != me_id)) + ship_id_map * (ship_map == me_id))) # This is not input to q_network
 
     return np.array(processed_state)
 
@@ -83,7 +95,7 @@ def preprocess(raw_state, me_id, turn_number, constants):
 def center_state_for_ship(state, ship_id_map, ship_id, shape=None):
     """
     center the state from ship perspective
-    :param state: 3d ndarray
+    :param state: 1d ndarray of csr matrix or 3d ndarray
     :param ship_id_map: 2d ndarray
     :param ship_id: int
     :param shape: None or int
@@ -97,7 +109,8 @@ def center_state_for_ship(state, ship_id_map, ship_id, shape=None):
         print('function center_state_for_ship: more then one / zero match found for ship_id {}, ship location {}'.format(ship_id, _ship_location))
         return
 
-    centered_state = state
+    # convert into 3d ndarray if needed
+    centered_state = state if len(state.shape) == 3 else np.array([_.toarray() for _ in state])
 
     for i in range(2):
         if _ship_location[i][0] == _center_location[0]: continue
@@ -145,23 +158,39 @@ def get_halite_command(turn_limit=300, replay_directory='', parameters = {}):
     return cmd
 
 
-# parameter
-_parameters = {
-    'epsilon_train': 0.01,
-    'epsilon_decay_period': 250000,
-    'batch_size': 32,
-    'discount': 0.99,
-    'min_replay_history': 20000,
-    'target_update_period': 8000,
-    'training_steps': 0,
-    'folder': 'simple_dqn'
-}
-
-max_training_steps = 5000000
-games_num = 0
 actions_list = np.array([commands.NORTH, commands.EAST, commands.SOUTH, commands.WEST, commands.STAY_STILL])
 
+
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(__name__)
+    # General
+    parser.add_argument("--max_training_steps", default=5000000, type=int, help="Total number of training steps")
+    # Arg to be passed to rl_1.py
+    parser.add_argument("--epsilon_train", default=0.01, type=float, help="the value to which the agent's epsilon is eventually decayed during training")
+    parser.add_argument("--epsilon_decay_period", default=250000, type=int, help="length of the epsilon decay schedule")
+    parser.add_argument("--batch_size", default=32, type=int, help="experiences fetched for training")
+    parser.add_argument("--discount", default=0.99, type=float, help="the discount factor")
+    parser.add_argument("--min_replay_history", default=20000, type=int, help="experiences needed before training q network")
+    parser.add_argument("--target_update_period", default=8000, type=int, help="update period for the target network")
+    parser.add_argument("--folder", default='simple_dqn', type=str, help="folder to store networks, experiences, log")
+
+    args = parser.parse_args()
+
+    # parameter
+    _parameters = {
+        'epsilon_train': args.epsilon_train,
+        'epsilon_decay_period': args.epsilon_decay_period,
+        'batch_size': args.batch_size,
+        'discount': args.discount,
+        'min_replay_history': args.min_replay_history,
+        'target_update_period': args.target_update_period,
+        'training_steps': 0,
+        'folder': args.folder,
+    }
+    max_training_steps = args.max_training_steps
+    games_num = 0
+
+    print(_parameters)
     print('simple_dqn begin')
 
     # Create folder
@@ -192,9 +221,11 @@ if __name__ == "__main__":
 
         games_num += 1
         print('\nsimple_dqn starting %d game, trained %d steps\n' % (games_num, _parameters['training_steps']))
+        start_time = time.time()
         subprocess.call(cmd)
         subprocess.call(["mv", "bot-0.log", "./{}/{}".format(replay_directory, "bot-0.log")])
         subprocess.call(["mv", "bot-1.log", "./{}/{}".format(replay_directory, "bot-1.log")])
+        print('\ntook {} seconds\n' % (time.time() - start_time))
 
         _parameters['training_steps'] += turn_limit
 

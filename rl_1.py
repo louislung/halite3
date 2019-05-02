@@ -26,7 +26,7 @@ import argparse, time, numpy as np
 from simple_dqn import *
 import keras
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(__name__)
 # General
 parser.add_argument("--RANDOM_SEED", default=-1, type=int, help="random seed, -1 = no need to set the seed")
 parser.add_argument("--folder", default='', type=str, help="folder to store networks, experiences, log")
@@ -52,6 +52,8 @@ discount = args.discount
 min_replay_history = args.min_replay_history
 target_update_period = args.target_update_period
 training_steps = args.training_steps
+
+start_time = time.time()
 
 # Read network
 q_network = keras.models.load_model(os.path.join(folder, 'q_network'))
@@ -87,6 +89,7 @@ def get_move_cost(position):
 ##################
 game = hlt.Game()
 game.ready("LouisBot")
+logging.debug('{} seconds to read replay, network and ready game'.format(time.time() - start_time))
 
 actions = {}
 rewards = {}
@@ -113,10 +116,12 @@ while True:
 
     # Get the latest game state.
     # Extract player metadata and the updated map metadata convenience.
+    start_time = time.time()
     game.update_frame()
     me = game.me
     game_map = game.game_map
     command_queue = []
+    logging.debug('{} seconds to init game state'.format(time.time() - start_time))
 
     # Set raw_state and processed_state
     raw_state = {
@@ -129,9 +134,11 @@ while True:
     }
     processed_state = preprocess(raw_state, me.id, game.turn_number, constants)
 
-    if len(actions.keys()) != 0: # only train if there is any action last round
+    # only train if there is any action last round
+    if len(actions.keys()) != 0:
         # Calculate rewards, terminations
         # todo: calculate rewards if converted into dropoff
+        start_time = time.time()
         for ship_id in rewards.keys():
             # Check if ship moved to dropoff
             _move_to_dropoff = False
@@ -156,22 +163,32 @@ while True:
                     rewards[ship_id] += (ship.prev_halite_amount - _info_ships_move_cost[ship_id]) / constants.MAX_HALITE
                 else:
                     rewards[ship_id] += (ship.halite_amount - ship.prev_halite_amount) / constants.MAX_HALITE
+        logging.debug('{} seconds to calculate rewards / terminations'.format(time.time() - start_time))
 
         # Append replay
-        _ = np.array([[prev_processed_state, processed_state]], dtype=np.float64)
+        start_time = time.time()
+        _ = np.array([[prev_processed_state, processed_state]])
         state_replay = _ if len(state_replay) == 0 else np.append(state_replay, _, axis=0)
         _ = np.array([[state_replay.shape[0] - 1, id, actions[id], rewards[id], terminations[id]] for id in actions.keys()], dtype=object)
         ship_replay = _ if len(ship_replay) == 0 else np.append(ship_replay, _, axis=0)
+        logging.debug('{} seconds to append replay'.format(time.time() - start_time))
 
         # Fit the network
+        start_time = time.time()
         if len(state_replay) > min_replay_history:
             _samples_ship_index = np.random.choice(ship_replay.shape[0], batch_size, False)
             _samples_actions = np.array(list(ship_replay[_samples_ship_index, 2]), dtype=int)  # 2d array
             _samples_rewards = ship_replay[_samples_ship_index, 3].astype(np.float64) # 1d array
             _samples_termination = ship_replay[_samples_ship_index, 4].astype(int) # 1d array
             _samples_state_index = ship_replay[_samples_ship_index, 0].astype(int)
-            _samples_state = state_replay[_samples_state_index, 0] # 4d array
-            _samples_next_state = state_replay[_samples_state_index, 1] # 4d array
+            _samples_state = state_replay[_samples_state_index, 0]
+            _samples_next_state = state_replay[_samples_state_index, 1]
+            if len(_samples_state.shape) != 4:
+                # transform 2d array of sparse matrix to 4d array
+                _samples_state = np.array([c.toarray() for r in _samples_state for c in r ]).reshape(*_samples_state.shape, *_samples_state[0][0].shape)
+                _samples_next_state = np.array([c.toarray() for r in _samples_next_state for c in r]).reshape(*_samples_next_state.shape, *_samples_next_state[0][0].shape)
+            _samples_state = _samples_state[:, 0:-1, :, :] # 4d array of shape batch sizex11x32x32, ignore ship id state
+            _samples_next_state = _samples_next_state[:, 0:-1, :, :] # 4d array of shape batch sizex11x32x32, ignore ship id state
 
             _q_value = q_network.predict(_samples_state) # 1d array
             _max_next_q_value = np.max(q_network.predict(_samples_next_state), 1) # 1d array
@@ -184,6 +201,7 @@ while True:
             # Update target network
             if training_steps % target_update_period == 0:
                 target_network.set_weights(q_network.get_weights())
+        logging.debug('{} seconds to fit the nerwork'.format(time.time() - start_time))
 
         training_steps += 1
 
@@ -200,7 +218,8 @@ while True:
     # Set actions for every ships
     # todo: only do this if not reach MAX_TURNS?
     for ship in me.get_ships():
-        state = center_state_for_ship(processed_state[0:-1], processed_state[-1], ship.id)
+        start_time = time.time()
+        state = center_state_for_ship(processed_state[0:-1], processed_state[-1].toarray(), ship.id)
 
         # Select actions from epsilon-greedy policy
         _move_cost = _move_cost_map[ship.position.y, ship.position.x]
@@ -210,7 +229,8 @@ while True:
         elif np.random.rand() < epsilon:
             a = random.choice(actions_list)
         else:
-            a = actions_list[np.argmax(q_network.predict(np.array([processed_state])))]
+            _ = processed_state[0:-1] if len(processed_state.shape) == 3 else np.array([i.toarray() for i in processed_state[0:-1]])
+            a = actions_list[np.argmax(q_network.predict(np.array([_])))]
 
         if a in [commands.NORTH, commands.EAST, commands.SOUTH, commands.WEST, commands.STAY_STILL]:
             target_position = normalize_directional_offset(ship.position, a)
@@ -227,15 +247,18 @@ while True:
             if __name__ == '__main__':
                 command = ship.make_dropoff()
         command_queue.append(command)
+        logging.debug('{} seconds to set acions for one ship'.format(time.time() - start_time))
 
     if game.turn_number == constants.MAX_TURNS:
+        start_time = time.time()
         np.save(os.path.join(folder, 'state_replay.npy'), state_replay)
         np.save(os.path.join(folder, 'ship_replay.npy'), ship_replay)
-        logging.info('saved replay')
+        logging.debug('{} seconds to save replay'.format(time.time() - start_time))
 
+        start_time = time.time()
         q_network.save(os.path.join(folder, 'q_network'))
         target_network.save(os.path.join(folder, 'target_network'))
-        # logging.info('saved network')
+        logging.debug('{} seconds to save network'.format(time.time() - start_time))
 
     # Spawn if no ship
     if len(me.get_ships()) == 0:
