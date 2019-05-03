@@ -7,6 +7,22 @@ from keras.models import Sequential
 from keras.layers import Dense, Conv2D, Flatten
 import keras.backend as K
 
+# todo;
+# error when saving too large numpy file, temp sol: restrict smaller replay capacity
+# Bot error output was:
+# 2019-05-03 17:33:19.042367: I tensorflow/core/platform/cpu_feature_guard.cc:141] Your CPU supports instructions that this TensorFlow binary was not compiled to use: AVX2 FMA
+# Using TensorFlow backend.
+# Traceback (most recent call last):
+#   File "rl_1.py", line 273, in <module>
+#     np.save(os.path.join(folder, 'state_replay.npy'), state_replay)
+#   File "/Users/Shared/anaconda/anaconda3/envs/hk01_py36/lib/python3.6/site-packages/numpy/lib/npyio.py", line 521, in save
+#     pickle_kwargs=pickle_kwargs)
+#   File "/Users/Shared/anaconda/anaconda3/envs/hk01_py36/lib/python3.6/site-packages/numpy/lib/format.py", line 593, in write_array
+#     pickle.dump(array, fp, protocol=2, **pickle_kwargs)
+# OSError: [Errno 22] Invalid argument
+
+
+
 
 ###########
 # Network #
@@ -142,17 +158,18 @@ def linearly_decaying_epsilon(step, warmup_steps, decay_period=250000, epsilon=0
     return epsilon + bonus
 
 
-def get_halite_command(turn_limit=300, replay_directory='', parameters = {}):
-    cmd = ["./halite", "--width 32", "--height 32", "--no-timeout", "--no-compression"]
+def get_halite_command(map_size=32, turn_limit=300, replay_directory='', parameters = {}):
+    cmd = ["./halite", "--width %d" % map_size, "--height %d" % map_size, "--no-timeout", "--no-compression"]
     cmd.append("--turn-limit %d" % turn_limit)
     if replay_directory:
         cmd.append("--replay-directory %s" % (replay_directory))
         cmd.append("-vvv")
-    cmd.append("python3 8_.py --MAX_SHIP_ON_MAP 0 --COLLISION_2P 0 --MAKE_DROPOFF_GAIN_COST_RATIO 999")
+    cmd.append("python3 8_.py --MAX_SHIP_ON_MAP 0 --COLLISION_2P 0 --MAKE_DROPOFF_GAIN_COST_RATIO 999 --log_directory %s" % replay_directory)
 
     script = "python3 rl_1.py"
     for p in parameters.keys():
         script += ' --%s %s' % (p, parameters[p])
+    script += ' --log_directory %s' % replay_directory
 
     cmd.append(script)
     return cmd
@@ -164,7 +181,8 @@ actions_list = np.array([commands.NORTH, commands.EAST, commands.SOUTH, commands
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(__name__)
     # General
-    parser.add_argument("--max_training_steps", default=5000000, type=int, help="Total number of training steps")
+    parser.add_argument("--max_training_steps", default=500000, type=int, help="Total number of training steps")
+    parser.add_argument("--map_size", default=32, type=int, help="map size to be played")
     # Arg to be passed to rl_1.py
     parser.add_argument("--epsilon_train", default=0.01, type=float, help="the value to which the agent's epsilon is eventually decayed during training")
     parser.add_argument("--epsilon_decay_period", default=250000, type=int, help="length of the epsilon decay schedule")
@@ -172,6 +190,7 @@ if __name__ == "__main__":
     parser.add_argument("--discount", default=0.99, type=float, help="the discount factor")
     parser.add_argument("--min_replay_history", default=20000, type=int, help="experiences needed before training q network")
     parser.add_argument("--target_update_period", default=8000, type=int, help="update period for the target network")
+    parser.add_argument("--replay_capacity", default=50000, type=int, help="number of transitions to keep in memory")
     parser.add_argument("--folder", default='simple_dqn', type=str, help="folder to store networks, experiences, log")
 
     args = parser.parse_args()
@@ -185,9 +204,11 @@ if __name__ == "__main__":
         'min_replay_history': args.min_replay_history,
         'target_update_period': args.target_update_period,
         'training_steps': 0,
+        'replay_capacity': args.replay_capacity,
         'folder': args.folder,
     }
     max_training_steps = args.max_training_steps
+    map_size = args.map_size
     games_num = 0
 
     print(_parameters)
@@ -198,15 +219,15 @@ if __name__ == "__main__":
         os.mkdir(_parameters['folder'])
 
     # Set training_steps
-    if os.path.exists(os.path.join(_parameters['folder'], 'state_replay.npy')):
-        state_replay = np.load(os.path.join(_parameters['folder'], 'state_replay.npy'))
-        _parameters['training_steps'] = len(state_replay)
-        del state_replay
+    if os.path.exists(os.path.join(_parameters['folder'], 'ship_replay_index.npy')):
+        ship_replay_index = np.load(os.path.join(_parameters['folder'], 'ship_replay_index.npy'))
+        _parameters['training_steps'] = ship_replay_index
+        del ship_replay_index
 
     # Init q_network and target_network
     if not os.path.exists(os.path.join(_parameters['folder'], 'q_network')):
-        q_network = DQN(output=len(actions_list))
-        target_network = DQN(output=len(actions_list))
+        q_network = DQN(input=(11, map_size, map_size), output=len(actions_list))
+        target_network = DQN(input=(11, map_size, map_size), output=len(actions_list))
         target_network.model.set_weights(q_network.model.get_weights())
         q_network.model.save(os.path.join(_parameters['folder'], 'q_network'))
         target_network.model.save(os.path.join(_parameters['folder'], 'target_network'))
@@ -217,15 +238,15 @@ if __name__ == "__main__":
         replay_directory = os.path.join(_parameters['folder'], datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
         if not os.path.exists(replay_directory):
             os.mkdir(replay_directory)
-        cmd = get_halite_command(replay_directory = replay_directory, turn_limit = turn_limit + 2, parameters = _parameters)
+        cmd = get_halite_command(map_size=map_size, replay_directory = replay_directory, turn_limit = turn_limit + 2, parameters = _parameters)
 
         games_num += 1
         print('\nsimple_dqn starting %d game, trained %d steps\n' % (games_num, _parameters['training_steps']))
         start_time = time.time()
         subprocess.call(cmd)
-        subprocess.call(["mv", "bot-0.log", "./{}/{}".format(replay_directory, "bot-0.log")])
-        subprocess.call(["mv", "bot-1.log", "./{}/{}".format(replay_directory, "bot-1.log")])
-        print('\ntook {} seconds\n' % (time.time() - start_time))
+        # subprocess.call(["mv", "bot-0.log", "./{}/{}".format(replay_directory, "bot-0.log")])
+        # subprocess.call(["mv", "bot-1.log", "./{}/{}".format(replay_directory, "bot-1.log")])
+        print('\ntook {} seconds\n'.format(time.time() - start_time))
 
         _parameters['training_steps'] += turn_limit
 

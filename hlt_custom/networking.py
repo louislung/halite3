@@ -1,6 +1,6 @@
 import json
 import logging
-import sys
+import sys, os
 
 from .common import read_input
 from . import constants
@@ -11,7 +11,7 @@ class Game:
     """
     The game object holds all metadata pertinent to the game and all its contents
     """
-    def __init__(self):
+    def __init__(self, log_directory=''):
         """
         Initiates a game object collecting all start-state instances for the contained items for pre-game.
         Also sets up basic logging.
@@ -25,7 +25,7 @@ class Game:
         num_players, self.my_id = map(int, read_input().split())
 
         logging.basicConfig(
-            filename="bot-{}.log".format(self.my_id),
+            filename=os.path.join(log_directory, "bot-{}.log".format(self.my_id)),
             filemode="w",
             level=logging.DEBUG,
         )
