@@ -15,6 +15,9 @@
 # Todo
 # 1.
 
+# eval command
+# ./halite --width 8 --height 8 --no-timeout --no-compression --seed 1557049871 --turn-limit 400 --replay-directory simple_dqn_8x8_3/eval/ -vvv "python3 8_.py --MAX_SHIP_ON_MAP -1 --COLLISION_2P 0 --MAKE_DROPOFF_GAIN_COST_RATIO 999 --log_directory simple_dqn_8x8_3/eval/" "python3 rl_1.py --eval 1 --folder simple_dqn_8x8_3/eval --log_directory simple_dqn_8x8_3/eval --epsilon_eval 0" > simple_dqn_8x8_3/eval/eval.log
+
 #########
 # Setup #
 #########
@@ -31,6 +34,8 @@ parser = argparse.ArgumentParser(__name__)
 parser.add_argument("--RANDOM_SEED", default=-1, type=int, help="random seed, -1 = no need to set the seed")
 parser.add_argument("--folder", default='', type=str, help="folder to store networks, experiences, log")
 parser.add_argument("--log_directory", default='', type=str, help="folder to store bot log")
+parser.add_argument("--eval", default=0, type=int, help="evaluation mode, will not select random actions")
+parser.add_argument("--epsilon_eval", default=0.01, type=float, help="epsilon used in evaluation mode")
 # Network
 parser.add_argument("--epsilon_train", default=0.01, type=float, help="the value to which the agent's epsilon is eventually decayed during training")
 parser.add_argument("--epsilon_decay_period", default=250000, type=int, help="length of the epsilon decay schedule")
@@ -40,6 +45,8 @@ parser.add_argument("--min_replay_history", default=20000, type=int, help="exper
 parser.add_argument("--target_update_period", default=8000, type=int, help="update period for the target network")
 parser.add_argument("--training_steps", default=0, type=int, help="number of steps trained (even just store experience) before")
 parser.add_argument("--replay_capacity", default=10000, type=int, help="number of transitions to keep in memory")
+parser.add_argument("--double", default=0, type=int, help="use double q network or not")
+parser.add_argument("--sparse_reward", default=0, type=int, help="use sparse rewards")
 
 args = parser.parse_args()
 
@@ -48,6 +55,8 @@ if args.RANDOM_SEED != -1:
     np.random.seed(args.RANDOM_SEED)
 folder = args.folder
 log_directory = args.log_directory
+eval = args.eval
+epsilon_eval = args.epsilon_eval
 epsilon_train = args.epsilon_train
 epsilon_decay_period = args.epsilon_decay_period
 batch_size = args.batch_size
@@ -56,12 +65,17 @@ min_replay_history = args.min_replay_history
 target_update_period = args.target_update_period
 training_steps = args.training_steps
 replay_capacity = args.replay_capacity
+double = args.double
+sparse_reward = args.sparse_reward
 
 start_time = time.time()
 
 # Read network
-q_network = keras.models.load_model(os.path.join(folder, 'q_network'))
-target_network = keras.models.load_model(os.path.join(folder, 'target_network'))
+q_network = DQN()
+target_network = DQN()
+q_network.load_model(os.path.join(folder, 'q_network'))
+q_network.save(os.path.join(folder, 'q_network'))
+target_network.load_model(os.path.join(folder, 'target_network'))
 
 # Read replay
 # todo: take care when the reaply capacity changed?
@@ -73,7 +87,7 @@ if os.path.exists(os.path.join(folder, 'state_replay.npy')) and os.path.exists(o
     _norm_state_replay_index = state_replay_index % state_replay.shape[0]
     _norm_ship_replay_index = ship_replay_index % ship_replay.shape[0]
 else:
-    state_replay = np.zeros((replay_capacity, 2, 12), dtype=object)
+    state_replay = np.zeros((replay_capacity, 2, 10), dtype=object)
     ship_replay = np.zeros((replay_capacity, 5), dtype=object)
     state_replay_index = 0
     ship_replay_index = 0
@@ -167,7 +181,7 @@ while True:
                 # If ship terminated
                 terminations[ship_id] = 1
                 rewards[ship_id] += -1
-                # todo: no ship object if crashed
+                # todo: no ship object if crashed, need to find another way to calculate
                 # if _move_to_dropoff:
                 #     rewards[ship_id] += (ship.prev_halite_amount - _info_ships_move_cost[ship_id]) / constants.MAX_HALITE
             else:
@@ -176,7 +190,14 @@ while True:
                     rewards[ship_id] += (ship.prev_halite_amount - _info_ships_move_cost[ship_id]) / constants.MAX_HALITE
                 else:
                     rewards[ship_id] += (ship.halite_amount - ship.prev_halite_amount) / constants.MAX_HALITE
+
+            # override to use sparse rewards
+            if sparse_reward and not _move_to_dropoff:
+                rewards[ship_id] = 0
+
             logging.debug('{} seconds to calculate rewards / terminations'.format(time.time() - start_time))
+        logging.debug('last round rewards = {}'.format(rewards))
+        logging.debug('last round termination = {}'.format(terminations))
 
         # Append replay
         start_time = time.time()
@@ -196,7 +217,7 @@ while True:
 
         # Fit the network
         start_time = time.time()
-        if ship_replay_index > min_replay_history:
+        if ship_replay_index > min_replay_history and not eval:
             _samples_ship_index = np.random.choice(min(ship_replay.shape[0], ship_replay_index), batch_size, False)
             _samples_actions = np.array(list(ship_replay[_samples_ship_index, 2]), dtype=int)  # 2d array
             _samples_rewards = ship_replay[_samples_ship_index, 3].astype(np.float64) # 1d array
@@ -208,16 +229,16 @@ while True:
                 # transform 2d array of sparse matrix to 4d array
                 _samples_state = np.array([c.toarray() for r in _samples_state for c in r ]).reshape(*_samples_state.shape, *_samples_state[0][0].shape)
                 _samples_next_state = np.array([c.toarray() for r in _samples_next_state for c in r]).reshape(*_samples_next_state.shape, *_samples_next_state[0][0].shape)
-            _samples_state = _samples_state[:, 0:-1, :, :] # 4d array of shape batch size x 11 x map_size x map_size, ignore ship id state
-            _samples_next_state = _samples_next_state[:, 0:-1, :, :] # 4d array of shape batch size x 11 x map_size x map_size, ignore ship id state
+            _samples_state = _samples_state[:, 0:-1, :, :] # 4d array of shape batch size x no. of features map x map_size x map_size, ignore ship id state
+            _samples_next_state = _samples_next_state[:, 0:-1, :, :] # 4d array of shape batch size x no. of features map x map_size x map_size, ignore ship id state
 
-            _q_value = q_network.predict(_samples_state) # 1d array
-            _max_next_q_value = np.max(q_network.predict(_samples_next_state), 1) # 1d array
-            y = _samples_actions * (_samples_rewards + (1 - _samples_termination) * discount * _max_next_q_value)[:, None] # 2d array
-            y = _q_value * (1 - _samples_actions) + (_samples_actions * y)
-            x = _samples_state
+            # _q_value = q_network.predict(_samples_state) # 1d array
+            # _max_next_q_value = np.max(target_network.predict(_samples_next_state), 1) # 1d array
+            # y = _samples_actions * (_samples_rewards + (1 - _samples_termination) * discount * _max_next_q_value)[:, None] # 2d array
+            # y = _q_value * (1 - _samples_actions) + (_samples_actions * y)
+            # x = _samples_state
 
-            q_network.fit(x, y, epochs=1, verbose=0)
+            q_network.fit(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, double=double, target_network=target_network)
 
             # Update target network
             if training_steps % target_update_period == 0:
@@ -234,24 +255,27 @@ while True:
     terminations = {}
     _info_ships_target_position = {}
     _info_ships_move_cost = {}
-    _move_cost_map = processed_state[9] * constants.MAX_HALITE
+    _move_cost_map = processed_state[7] * constants.MAX_HALITE
 
     # Set actions for every ships
     # todo: only do this if not reach MAX_TURNS?
     for ship in me.get_ships():
         start_time = time.time()
-        state = center_state_for_ship(processed_state[0:-1], processed_state[-1].toarray(), ship.id)
+        centered_state = center_state_for_ship(processed_state[0:-1], processed_state[-1].toarray(), ship.id)
 
         # Select actions from epsilon-greedy policy
         _move_cost = _move_cost_map[ship.position.y, ship.position.x]
-        epsilon = linearly_decaying_epsilon(training_steps, min_replay_history, epsilon_decay_period, epsilon_train)
-        if ship.halite_amount < _move_cost:
+        epsilon = linearly_decaying_epsilon(training_steps, min_replay_history, epsilon_decay_period, epsilon_train) if not eval else epsilon_eval
+        if ship.halite_amount < _move_cost and _move_cost > 0:
             a = commands.STAY_STILL
         elif np.random.rand() < epsilon:
             a = random.choice(actions_list)
+            logging.info('epsilon={}, choosed random action={}'.format(epsilon, a))
         else:
-            _ = processed_state[0:-1] if len(processed_state.shape) == 3 else np.array([i.toarray() for i in processed_state[0:-1]])
-            a = actions_list[np.argmax(q_network.predict(np.array([_])))]
+            # _ = processed_state[0:-1] if len(processed_state.shape) == 3 else np.array([i.toarray() for i in processed_state[0:-1]])
+            _q_val = q_network.predict(np.array([centered_state]))
+            a = actions_list[np.argmax(_q_val)]
+            logging.info('epsilon={}, q_val={}, a={}'.format(epsilon, _q_val, a))
 
         if a in [commands.NORTH, commands.EAST, commands.SOUTH, commands.WEST, commands.STAY_STILL]:
             target_position = normalize_directional_offset(ship.position, a)

@@ -10,6 +10,7 @@ class Player:
         self.id = player_id
         self.shipyard = shipyard
         self.halite_amount = halite
+        self.prev_halite_amount = 0
         self._ships = {}
         self._dropoffs = {}
 
@@ -71,6 +72,7 @@ class Player:
         :param halite: How much halite the player has in total
         :return: nothing.
         """
+        self.prev_halite_amount = self.halite_amount
         self.halite_amount = halite
         self._ships = {id: ship for (id, ship) in [Ship._generate(self.id) for _ in range(num_ships)]}
         self._dropoffs = {id: dropoff for (id, dropoff) in [Dropoff._generate(self.id) for _ in range(num_dropoffs)]}

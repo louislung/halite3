@@ -20,7 +20,7 @@ class DQN(object):
     def load_model(self, path):
         self.model = keras.models.load_model(path)
 
-    def _fit(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False):
+    def fit(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False):
         if not double:
             _q_value = self.model.predict(obs)  # 1d array
             _max_next_q_value = np.max(target_network.predict(next_obs), 1)  # 1d array
@@ -34,9 +34,6 @@ class DQN(object):
             y = _q_value * (1 - act) + (act * y)
 
         self.model.fit(obs, y, epochs=1, batch_size = len(obs), verbose=0)
-
-    def fit(self, x, y, **kwargs):
-        self.model.fit(x, y, **kwargs)
 
     def save(self, path):
         self.model.save(path)
@@ -253,12 +250,7 @@ if __name__ == "__main__":
                     __a = np.zeros((_a.shape[0], action_size))
                     __a[np.arange(_a.shape[0]), _a] = 1
                     _a = __a # 2d array
-                    # _q_value = q_network.predict(_s)  # 1d array
-                    # _max_next_q_value = np.max(target_network.predict(_n), 1)  # 1d array
-                    # y = _a * (_r + (1 - _d) * discount * _max_next_q_value)[:, None]  # 2d array
-                    # y = _q_value * (1 - _a) + (_a * y)
-                    # q_network.fit(_s, y, epochs=1, batch_size=batch_size, verbose=0)
-                    q_network._fit(_s, _a, _r, _n, _d, double=double, discount=discount, target_network=target_network)
+                    q_network.fit(_s, _a, _r, _n, _d, double=double, discount=discount, target_network=target_network)
 
                     # Sync target network
                     if training_steps % target_update_period == 0:
