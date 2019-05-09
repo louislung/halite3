@@ -1,13 +1,38 @@
 import gym
 from simple_dqn import *
 import pickle
+import keras
+from keras.models import Sequential
+from keras.layers import Dense, Conv2D, Flatten
+import keras.backend as K
 
+# get started
+# python atari_test.py --double 1 --huber 1 --folder double_huber
 
 class DQN(object):
 
-    def __init__(self, input=(11, 32, 32), output=5):
+    def __init__(self, input=(11, 32, 32), output=5, huber=0):
+
+        def huber_loss(a, b, in_keras=True):
+            error = a - b
+            quadratic_term = error * error / 2
+            linear_term = abs(error) - 1 / 2
+            use_linear_term = (abs(error) > 1.0)
+            if in_keras:
+                # Keras won't let us multiply floats by booleans, so we explicitly cast the booleans to floats
+                use_linear_term = K.cast(use_linear_term, 'float32')
+            return use_linear_term * linear_term + (1 - use_linear_term) * quadratic_term
+
         self.input = input
         self.output = output
+        self.huber = huber
+        self.custom_objects = {}
+
+        if huber:
+            self.loss = huber_loss
+            self.custom_objects['huber_loss'] = huber_loss
+        else:
+            self.loss = keras.losses.mean_squared_error
 
         self.model = Sequential()
         self.model.add(Conv2D(3, (3, 3), strides=(1, 1), activation="relu", input_shape=self.input, data_format='channels_last'))
@@ -15,10 +40,10 @@ class DQN(object):
         self.model.add(Dense(32, activation='relu'))
         self.model.add(Dense(self.output, activation=None))
         self.optimizer = keras.optimizers.RMSprop(lr=0.01, decay=0.0, epsilon=0.00001, rho=0.95)
-        self.model.compile(loss=keras.losses.mean_squared_error, optimizer=self.optimizer)
+        self.model.compile(loss=self.loss, optimizer=self.optimizer)
 
     def load_model(self, path):
-        self.model = keras.models.load_model(path)
+        self.model = keras.models.load_model(path, custom_objects=self.custom_objects)
 
     def fit(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False):
         if not double:
@@ -148,11 +173,12 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(__name__)
     # General
-    parser.add_argument("--folder", default='atari_test', type=str, help="name of folder to store everything")
+    parser.add_argument("--folder", default='default', type=str, help="name of folder to store everything")
     parser.add_argument("--game", default='CubeCrash-v0', type=str, help="game to play")
     parser.add_argument("--suffix", default='', type=str, help="suffix for all files stored")
     parser.add_argument("--max_training_steps", default=20000, type=int, help="max training steps")
     parser.add_argument("--double", default=0, type=int, help="use double q network or not")
+    parser.add_argument("--huber_loss", default=0, type=int, help="use huber loss function or not")
     parser.add_argument("--eval", default=0, type=int, help="evaluation mode")
     args = parser.parse_args()
 
@@ -162,16 +188,17 @@ if __name__ == "__main__":
     _config_name = 'config' + args.suffix
     _training_steps_name = 'training_steps' + args.suffix
     _episode_rewards_name = 'episode_rewards' + args.suffix + '.snappy.parquet'
-    _folder = os.path.join(args.folder, args.game)
+    _folder = os.path.join('atari_test', args.game, args.folder)
     _game = args.game
-    if not os.path.exists(_folder): os.mkdir(_folder)
+    if not os.path.exists(_folder): os.makedirs(_folder)
+    else: raise Exception('folder {} already exists, specify a new one'.format(_folder))
 
     eval = args.eval
     max_training_steps = args.max_training_steps
     replay_capacity = 5000
     min_replay_history = 2000
     batch_size = 32
-    epsilon_decay_period = 25000
+    epsilon_decay_period = max_training_steps // 2
     epsilon_train = 0.01
     epsilon_eval = 0.0
     init_training_steps = 0
@@ -182,8 +209,8 @@ if __name__ == "__main__":
     env = gym.make(_game)
     state_size = preprocess(env.reset(), _game).shape
     action_size = env.action_space.n
-    q_network = DQN(state_size, action_size)
-    target_network = DQN(state_size, action_size)
+    q_network = DQN(state_size, action_size, huber=args.huber_loss)
+    target_network = DQN(state_size, action_size, huber=args.huber_loss)
     target_network.set_weights(q_network.get_weights())
     episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','epsilon'])
     done = False
@@ -225,7 +252,7 @@ if __name__ == "__main__":
             state = env.reset()
             state = preprocess(state, _game)
             _reward_list = []
-            print('----reset----', flush=True)
+            print('----reset steps {}/{}----'.format(training_steps, max_training_steps), flush=True)
             while True:
                 # Select actions
                 epsilon = linearly_decaying_epsilon(training_steps, min_replay_history, epsilon_decay_period, epsilon_train) if not eval else epsilon_eval
@@ -286,13 +313,18 @@ if __name__ == "__main__":
                 'init_training_steps': init_training_steps,
                 'discount': discount,
                 'target_update_period': target_update_period,
+                'huber_loss': args.huber_loss,
             }, outfile, sort_keys=True, indent=4)
 
 # eval
+# import gym, time
+# env = gym.make('CubeCrash-v0')
 # state = env.reset()
+# # from atari_test import DQN
+# # q_network = DQN(huber=1)
 # # q_network.load_model('q_network')
 # for i in range(100):
-#     q_val = q_network.predict(np.array([state]))
+#     q_val = q_network.predict(np.array([preprocess(state,'CubeCrash-v0')]))
 #     action = np.argmax(q_val)
 #     next_state, reward, done, _ = env.step(action)
 #     state = next_state
@@ -302,3 +334,14 @@ if __name__ == "__main__":
 #     time.sleep(0.05)
 #     if done: break
 
+# plot episode rewards
+# import pandas as pd, matplotlib.pyplot as plt
+# huber = pd.read_parquet('atari_test/CubeCrash-v0/episode_rewards.snappy.parquet')
+# (huber.groupby(huber.index // 10).mean())['avg_rewards'].plot()
+# plt.show()
+
+# i=0
+# for df in [default, huber, double_huber, double]:
+#     (df.groupby(df.index // 10).mean())['avg_rewards'].plot(label=['default','huber','double_huber','double'][i])
+#     i+=1
+# plt.show()

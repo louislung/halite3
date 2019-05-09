@@ -1,0 +1,13 @@
+{
+    "batch_size": 32,
+    "discount": 0.99,
+    "epsilon_decay_period": 50000,
+    "epsilon_eval": 0.0,
+    "epsilon_train": 0.01,
+    "eval": 0,
+    "huber_loss": 1,
+    "init_training_steps": 0,
+    "max_training_steps": 100000,
+    "replay_capacity": 5000,
+    "target_update_period": 800
+}
