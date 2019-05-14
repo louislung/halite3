@@ -1,9 +1,9 @@
 import gym
-from simple_dqn import *
+import random, numpy as np, time
 import pickle
 import keras
-from keras.models import Sequential
-from keras.layers import Dense, Conv2D, Flatten
+from keras.models import Sequential, Model
+from keras.layers import Dense, Conv2D, Flatten, Input, Add, Subtract, Lambda, merge, Multiply
 import keras.backend as K
 
 # get started
@@ -11,7 +11,7 @@ import keras.backend as K
 
 class DQN(object):
 
-    def __init__(self, input=(11, 32, 32), output=5, huber=0):
+    def __init__(self, input=(11, 32, 32), output=5, lr=0.01, dueling=0, huber=0, opt='rmsprop'):
 
         def huber_loss(a, b, in_keras=True):
             error = a - b
@@ -25,6 +25,8 @@ class DQN(object):
 
         self.input = input
         self.output = output
+        self.lr = lr
+        self.dueling = dueling
         self.huber = huber
         self.custom_objects = {}
 
@@ -34,12 +36,32 @@ class DQN(object):
         else:
             self.loss = keras.losses.mean_squared_error
 
-        self.model = Sequential()
-        self.model.add(Conv2D(3, (3, 3), strides=(1, 1), activation="relu", input_shape=self.input, data_format='channels_last'))
-        self.model.add(Flatten())
-        self.model.add(Dense(32, activation='relu'))
-        self.model.add(Dense(self.output, activation=None))
-        self.optimizer = keras.optimizers.RMSprop(lr=0.01, decay=0.0, epsilon=0.00001, rho=0.95)
+        if dueling:
+            inp = Input(self.input)
+            if len(self.input) == 1:
+                x = Dense(32, activation="relu")(inp)
+            else:
+                x= Conv2D(3, (3, 3), strides=(1,1), activation="relu", data_format='channels_last')(inp)
+                x = Flatten()(x)
+            x_value = Dense(32, activation='relu')(x)
+            x_advantage = Dense(32, activation='relu')(x)
+            value = Dense(1, activation=None)(x_value)
+            advantage = Dense(self.output, activation=None)(x_advantage)
+            q_value = Lambda(lambda i: i[0] + i[1] - K.mean(i[1]), output_shape=(self.output,))([value, advantage])
+            self.model = Model(inputs=inp, outputs=q_value)
+        else:
+            self.model = Sequential()
+            if len(self.input) == 1:
+                self.model.add(Dense(32, activation='relu'))
+            else:
+                self.model.add(Conv2D(3, (3, 3), strides=(1, 1), activation="relu", input_shape=self.input, data_format='channels_last'))
+                self.model.add(Flatten())
+            self.model.add(Dense(32, activation='relu'))
+            self.model.add(Dense(self.output, activation=None))
+
+        self.optimizer = keras.optimizers.RMSprop(lr=self.lr, decay=0.0, epsilon=0.00001, rho=0.95)
+        if opt.upper() == 'ADAM':
+            self.optimizer = keras.optimizers.Adam(lr=self.lr, decay=0.0)
         self.model.compile(loss=self.loss, optimizer=self.optimizer)
 
     def load_model(self, path):
@@ -177,8 +199,12 @@ if __name__ == "__main__":
     parser.add_argument("--game", default='CubeCrash-v0', type=str, help="game to play")
     parser.add_argument("--suffix", default='', type=str, help="suffix for all files stored")
     parser.add_argument("--max_training_steps", default=20000, type=int, help="max training steps")
+    parser.add_argument("--lr", default=0.01, type=float, help="learning rate")
+    parser.add_argument("--replay_capacity", default=5000, type=int, help="replay capacity")
     parser.add_argument("--double", default=0, type=int, help="use double q network or not")
+    parser.add_argument("--dueling", default=0, type=int, help="use dueling network or not")
     parser.add_argument("--huber_loss", default=0, type=int, help="use huber loss function or not")
+    parser.add_argument("--opt", default='rmsprop', type=str, help="loss optimizer")
     parser.add_argument("--eval", default=0, type=int, help="evaluation mode")
     args = parser.parse_args()
 
@@ -195,7 +221,8 @@ if __name__ == "__main__":
 
     eval = args.eval
     max_training_steps = args.max_training_steps
-    replay_capacity = 5000
+    lr = args.lr
+    replay_capacity = args.replay_capacity
     min_replay_history = 2000
     batch_size = 32
     epsilon_decay_period = max_training_steps // 2
@@ -205,12 +232,14 @@ if __name__ == "__main__":
     discount = 0.99
     target_update_period = 800
     double = args.double
+    dueling = args.dueling
+    opt = args.opt
 
     env = gym.make(_game)
     state_size = preprocess(env.reset(), _game).shape
     action_size = env.action_space.n
-    q_network = DQN(state_size, action_size, huber=args.huber_loss)
-    target_network = DQN(state_size, action_size, huber=args.huber_loss)
+    q_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt)
+    target_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt)
     target_network.set_weights(q_network.get_weights())
     episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','epsilon'])
     done = False
@@ -281,11 +310,12 @@ if __name__ == "__main__":
 
                     # Sync target network
                     if training_steps % target_update_period == 0:
+                        print('update target network')
                         target_network.set_weights(q_network.get_weights())
 
                 training_steps += 1
                 if done:
-                    print('mean reward = {}', np.array(_reward_list).mean(), flush=True)
+                    print('reward: mean=%.4f\tsum=%.4f'%(np.array(_reward_list).mean(), np.array(_reward_list).sum()), flush=True)
                     episode_rewards = episode_rewards.append(
                         {
                             'avg_rewards' : np.array(_reward_list).mean(),
@@ -305,6 +335,7 @@ if __name__ == "__main__":
             json.dump({
                 'eval': eval,
                 'max_training_steps': max_training_steps,
+                'lr': lr,
                 'replay_capacity': replay_capacity,
                 'batch_size': batch_size,
                 'epsilon_decay_period': epsilon_decay_period,
@@ -313,7 +344,10 @@ if __name__ == "__main__":
                 'init_training_steps': init_training_steps,
                 'discount': discount,
                 'target_update_period': target_update_period,
+                'double': double,
+                'dueling': dueling,
                 'huber_loss': args.huber_loss,
+                'opt': opt,
             }, outfile, sort_keys=True, indent=4)
 
 # eval
@@ -344,4 +378,5 @@ if __name__ == "__main__":
 # for df in [default, huber, double_huber, double]:
 #     (df.groupby(df.index // 10).mean())['avg_rewards'].plot(label=['default','huber','double_huber','double'][i])
 #     i+=1
+# plt.legend()
 # plt.show()
