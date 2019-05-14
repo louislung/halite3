@@ -5,6 +5,7 @@ import keras
 from keras.models import Sequential, Model
 from keras.layers import Dense, Conv2D, Flatten, Input, Add, Subtract, Lambda, merge, Multiply
 import keras.backend as K
+from SumTree import SumTree
 
 # get started
 # python atari_test.py --double 1 --huber 1 --folder double_huber
@@ -115,7 +116,7 @@ class ReplayBuffer(object):
     def __len__(self):
         return len(self._buffer)
 
-    def add(self, obs_t, act, rew, obs_tp1, done):
+    def add(self, obs_t, act, rew, obs_tp1, done, error=0):
         """
         Add a new sample to the replay buffer.
         :param obs_t: observation at time t
@@ -152,6 +153,81 @@ class ReplayBuffer(object):
         idxes = [random.randint(0, len(self._buffer) - 1)
                  for _ in range(batch_size)]
         return self._encode_sample(idxes)
+
+    def dump(self, file_path=None):
+        """Dump the replay buffer into a file.
+        """
+        file = open(file_path, 'wb')
+        pickle.dump(self._buffer, file, -1)
+        file.close()
+
+    def load(self, file_path=None):
+        """Load the replay buffer from a file
+        """
+        file = open(file_path, 'rb')
+        self._buffer = pickle.load(file)
+        file.close()
+
+
+# https://github.com/rlcode/per/blob/master/prioritized_memory.py
+class PrioritizedReplayBuffer:  # stored as ( s, a, r, s_ ) in SumTree
+    e = 0.01
+    a = 0.6
+    beta = 0.4
+    beta_increment_per_sampling = 0.001
+
+    def __init__(self, capacity):
+        self.tree = SumTree(capacity)
+        self.capacity = capacity
+
+    def __len__(self):
+        return self.tree.n_entries
+
+    def _get_priority(self, error):
+        return (error + self.e) ** self.a
+
+    def add(self, obs_t, act, rew, obs_tp1, don, error):
+        # error = abs(y - y_hat)
+        # sample = (state, action, reward, next_state, done)
+        p = self._get_priority(error)
+        self.tree.add(p, (obs_t, act, rew, obs_tp1, don))
+
+    def sample(self, n):
+        batch = []
+        idxs = []
+        segment = self.tree.total() / n
+        priorities = []
+        obses_t, actions, rewards, obses_tp1, dones = [], [], [], [], []
+
+        self.beta = np.min([1., self.beta + self.beta_increment_per_sampling])
+
+        for i in range(n):
+            a = segment * i
+            b = segment * (i + 1)
+
+            s = random.uniform(a, b)
+            (idx, p, data) = self.tree.get(s)
+            priorities.append(p)
+            batch.append(data)
+            idxs.append(idx)
+
+            obs_t, action, reward, obs_tp1, done = data
+            obses_t.append(np.array(obs_t, copy=False))
+            actions.append(np.array(action, copy=False))
+            rewards.append(reward)
+            obses_tp1.append(np.array(obs_tp1, copy=False))
+            dones.append(done)
+
+        sampling_probabilities = priorities / self.tree.total()
+        is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
+        is_weight /= is_weight.max()
+
+        # return batch, idxs, is_weight
+        return np.array(obses_t), np.array(actions), np.array(rewards), np.array(obses_tp1), np.array(dones)
+
+    def update(self, idx, error):
+        p = self._get_priority(error)
+        self.tree.update(idx, p)
 
     def dump(self, file_path=None):
         """Dump the replay buffer into a file.
@@ -208,10 +284,11 @@ if __name__ == "__main__":
     parser.add_argument("--max_training_steps", default=20000, type=int, help="max training steps")
     parser.add_argument("--lr", default=0.01, type=float, help="learning rate")
     parser.add_argument("--replay_capacity", default=5000, type=int, help="replay capacity")
-    parser.add_argument("--double", default=0, type=int, help="use double q network or not")
-    parser.add_argument("--dueling", default=0, type=int, help="use dueling network or not")
-    parser.add_argument("--huber_loss", default=0, type=int, help="use huber loss function or not")
+    parser.add_argument("--double", default=1, type=int, help="use double q network or not")
+    parser.add_argument("--dueling", default=1, type=int, help="use dueling network or not")
+    parser.add_argument("--huber_loss", default=1, type=int, help="use huber loss function or not")
     parser.add_argument("--opt", default='rmsprop', type=str, help="loss optimizer")
+    parser.add_argument("--per", default=0, type=int, help="prioritized experience replay")
     parser.add_argument("--eval", default=0, type=int, help="evaluation mode")
     args = parser.parse_args()
 
@@ -241,6 +318,7 @@ if __name__ == "__main__":
     double = args.double
     dueling = args.dueling
     opt = args.opt
+    per = args.per
 
     env = gym.make(_game)
     state_size = preprocess(env.reset(), _game).shape
@@ -251,7 +329,7 @@ if __name__ == "__main__":
     episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','epsilon','avg_loss','total_loss','max_loss'])
     done = False
 
-    buffer = ReplayBuffer(replay_capacity)
+    buffer = ReplayBuffer(replay_capacity) if not per else PrioritizedReplayBuffer(replay_capacity)
 
     if os.path.exists(os.path.join(_folder, _q_network_name)):
         q_network.load_model(os.path.join(_folder,_q_network_name))
@@ -293,10 +371,11 @@ if __name__ == "__main__":
             while True:
                 # Select actions
                 epsilon = linearly_decaying_epsilon(training_steps, min_replay_history, epsilon_decay_period, epsilon_train) if not eval else epsilon_eval
+                q_vals = q_network.predict(np.array([state]))
                 if np.random.rand() < epsilon:
                     action = np.random.choice(action_size)
                 else:
-                    action = np.argmax(q_network.predict(np.array([state])))
+                    action = np.argmax(q_vals)
 
                 # Run experiment
                 next_state, reward, done, _ = env.step(action)
@@ -305,7 +384,13 @@ if __name__ == "__main__":
                 # print(reward, flush=True)
 
                 # Save experience
-                buffer.add(state, action, reward, next_state, done)
+                if per:
+                    error = 0
+                    error = abs(np.max(q_vals) - 0)
+                    # todo: calculate y_hat
+                    buffer.add(state, action, reward, next_state, done, error)
+                else:
+                    buffer.add(state, action, reward, next_state, done)
                 state = next_state
 
                 _s, _a, _r, _n, _d = buffer.sample(batch_size)

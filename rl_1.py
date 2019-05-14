@@ -45,7 +45,8 @@ parser.add_argument("--min_replay_history", default=20000, type=int, help="exper
 parser.add_argument("--target_update_period", default=8000, type=int, help="update period for the target network")
 parser.add_argument("--training_steps", default=0, type=int, help="number of steps trained (even just store experience) before")
 parser.add_argument("--replay_capacity", default=10000, type=int, help="number of transitions to keep in memory")
-parser.add_argument("--double", default=0, type=int, help="use double q network or not")
+parser.add_argument("--huber", default=1, type=int, help="use huber loss or not")
+parser.add_argument("--double", default=1, type=int, help="use double q network or not")
 parser.add_argument("--sparse_reward", default=0, type=int, help="use sparse rewards")
 
 args = parser.parse_args()
@@ -65,14 +66,15 @@ min_replay_history = args.min_replay_history
 target_update_period = args.target_update_period
 training_steps = args.training_steps
 replay_capacity = args.replay_capacity
+huber = args.huber
 double = args.double
 sparse_reward = args.sparse_reward
 
 start_time = time.time()
 
 # Read network
-q_network = DQN()
-target_network = DQN()
+q_network = DQN(huber=huber)
+target_network = DQN(huber=huber)
 q_network.load_model(os.path.join(folder, 'q_network'))
 q_network.save(os.path.join(folder, 'q_network'))
 target_network.load_model(os.path.join(folder, 'target_network'))
@@ -93,7 +95,7 @@ else:
     ship_replay_index = 0
     _norm_state_replay_index = 0
     _norm_ship_replay_index = 0
-
+_episode_log = os.path.join(folder, 'episode_log.csv')
 
 ###################
 # Custom function #
@@ -101,14 +103,14 @@ else:
 def normalize_directional_offset(position, move):
     return game_map.normalize(position.directional_offset(move))
 
-def get_move_cost(position):
-    # get move cost of any position
-    if game_map[position].halite_amount == 0:
-        return 0
-    elif game_map[position].halite_amount <= constants.MOVE_COST_RATIO:
-        return 1
-    else:
-        return int(game_map[position].halite_amount / constants.MOVE_COST_RATIO)
+# def get_move_cost(position):
+#     # get move cost of any position
+#     if game_map[position].halite_amount == 0:
+#         return 0
+#     # elif game_map[position].halite_amount <= constants.MOVE_COST_RATIO:
+#     #     return 1
+#     else:
+#         return int(game_map[position].halite_amount / constants.MOVE_COST_RATIO)
 
 
 ##################
@@ -123,6 +125,8 @@ rewards = {}
 terminations = {}
 _info_ships_target_position = {}
 _info_ships_move_cost = {}
+_info_rewards_list = []
+_info_loss_list = []
 
 while True:
     """
@@ -195,7 +199,10 @@ while True:
             if sparse_reward and not _move_to_dropoff:
                 rewards[ship_id] = 0
 
+            _info_rewards_list.append(rewards[ship_id])
+
             logging.debug('{} seconds to calculate rewards / terminations'.format(time.time() - start_time))
+            logging.debug('ship prev halite = {}, current halite = {}, move_cost = {}'.format(ship.prev_halite_amount, ship.halite_amount, _info_ships_move_cost[ship_id]))
         logging.debug('last round rewards = {}'.format(rewards))
         logging.debug('last round termination = {}'.format(terminations))
 
@@ -215,9 +222,11 @@ while True:
         _norm_state_replay_index = state_replay_index % state_replay.shape[0]
         logging.debug('{} seconds to append replay'.format(time.time() - start_time))
 
-        # Fit the network
         start_time = time.time()
-        if ship_replay_index > min_replay_history and not eval:
+        if not eval and ship_replay_index < batch_size:
+            # Not enough sample to evaluate yet, just set loss to 0
+            _info_loss_list.append(0)
+        elif not eval:
             _samples_ship_index = np.random.choice(min(ship_replay.shape[0], ship_replay_index), batch_size, False)
             _samples_actions = np.array(list(ship_replay[_samples_ship_index, 2]), dtype=int)  # 2d array
             _samples_rewards = ship_replay[_samples_ship_index, 3].astype(np.float64) # 1d array
@@ -232,17 +241,17 @@ while True:
             _samples_state = _samples_state[:, 0:-1, :, :] # 4d array of shape batch size x no. of features map x map_size x map_size, ignore ship id state
             _samples_next_state = _samples_next_state[:, 0:-1, :, :] # 4d array of shape batch size x no. of features map x map_size x map_size, ignore ship id state
 
-            # _q_value = q_network.predict(_samples_state) # 1d array
-            # _max_next_q_value = np.max(target_network.predict(_samples_next_state), 1) # 1d array
-            # y = _samples_actions * (_samples_rewards + (1 - _samples_termination) * discount * _max_next_q_value)[:, None] # 2d array
-            # y = _q_value * (1 - _samples_actions) + (_samples_actions * y)
-            # x = _samples_state
+            # Evaluate loss
+            loss = q_network.evaluate(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, double=double, target_network=target_network)
+            _info_loss_list.append(loss)
 
-            q_network.fit(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, double=double, target_network=target_network)
+            if ship_replay_index > min_replay_history:
+                # Fit the network
+                q_network.fit(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, double=double, target_network=target_network)
 
-            # Update target network
-            if training_steps % target_update_period == 0:
-                target_network.set_weights(q_network.get_weights())
+                # Update target network
+                if training_steps % target_update_period == 0:
+                    target_network.set_weights(q_network.get_weights())
         logging.debug('{} seconds to fit the nerwork'.format(time.time() - start_time))
 
         training_steps += 1
@@ -303,6 +312,20 @@ while True:
         logging.debug('{} seconds to save replay'.format(time.time() - start_time))
 
         start_time = time.time()
+        f = open(_episode_log, 'a')
+        f.write('%f,%f,%f,%f,%f,%f,%f\n'%(
+            np.array(_info_rewards_list).mean(),
+            np.array(_info_rewards_list).sum(),
+            np.array(_info_rewards_list).max(),
+            epsilon,
+            np.array(_info_loss_list).mean(),
+            np.array(_info_loss_list).sum(),
+            np.array(_info_loss_list).max(),
+        ))
+        f.close()
+        logging.debug('{} seconds to write episode log'.format(time.time() - start_time))
+
+        start_time = time.time()
         q_network.save(os.path.join(folder, 'q_network'))
         target_network.save(os.path.join(folder, 'target_network'))
         logging.debug('{} seconds to save network'.format(time.time() - start_time))
@@ -313,8 +336,5 @@ while True:
 
     # Send your moves back to the game environment, ending this turn.
     game.end_turn(command_queue)
-
-
-
 
 

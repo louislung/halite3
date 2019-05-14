@@ -3,8 +3,8 @@ import random, time, os, sys, subprocess, logging, datetime, argparse, time
 import numpy as np
 from scipy.sparse import csr_matrix
 import keras
-from keras.models import Sequential
-from keras.layers import Dense, Conv2D, Flatten
+from keras.models import Sequential, Model
+from keras.layers import Dense, Conv2D, Flatten, Input, Add, Subtract, Lambda, merge, Multiply
 import keras.backend as K
 
 # todo;
@@ -27,23 +27,61 @@ import keras.backend as K
 ###########
 class DQN(object):
 
-    def __init__(self, input=(11, 32, 32), output=5):
+    def __init__(self, input=(11, 32, 32), output=5, lr=0.01, dueling=0, huber=0, opt='rmsprop'):
+
+        def huber_loss(a, b, in_keras=True):
+            error = a - b
+            quadratic_term = error * error / 2
+            linear_term = abs(error) - 1 / 2
+            use_linear_term = (abs(error) > 1.0)
+            if in_keras:
+                # Keras won't let us multiply floats by booleans, so we explicitly cast the booleans to floats
+                use_linear_term = K.cast(use_linear_term, 'float32')
+            return use_linear_term * linear_term + (1 - use_linear_term) * quadratic_term
+
         self.input = input
         self.output = output
+        self.input = input
+        self.output = output
+        self.lr = lr
+        self.dueling = dueling
+        self.huber = huber
+        self.custom_objects = {}
 
-        self.model = Sequential()
-        self.model.add(Conv2D(24, (4, 4), strides=(2, 2), activation="relu", input_shape=self.input, data_format='channels_first'))
-        self.model.add(Conv2D(48, (3, 3), strides=(1, 1), activation="relu", data_format='channels_first'))
-        self.model.add(Flatten())
-        self.model.add(Dense(256, activation='relu'))
-        self.model.add(Dense(self.output, activation=None))
-        self.optimizer = keras.optimizers.RMSprop(lr=0.01, decay=0.0, epsilon=0.00001, rho=0.95)
-        self.model.compile(loss=keras.losses.mean_squared_error, optimizer=self.optimizer)
+        if huber:
+            self.loss = huber_loss
+            self.custom_objects['huber_loss'] = huber_loss
+        else:
+            self.loss = keras.losses.mean_squared_error
+
+        if dueling:
+            inp = Input(self.input)
+            x = Conv2D(24, (4, 4), strides=(2, 2), activation="relu", data_format='channels_first')(inp)
+            x = Conv2D(48, (3, 3), strides=(1, 1), activation="relu", data_format='channels_first')(inp)
+            x = Flatten()(x)
+            x_value = Dense(256, activation='relu')(x)
+            x_advantage = Dense(256, activation='relu')(x)
+            value = Dense(1, activation=None)(x_value)
+            advantage = Dense(self.output, activation=None)(x_advantage)
+            q_value = Lambda(lambda i: i[0] + i[1] - K.mean(i[1]), output_shape=(self.output,))([value, advantage])
+            self.model = Model(inputs=inp, outputs=q_value)
+        else:
+            self.model = Sequential()
+            self.model.add(Conv2D(24, (4, 4), strides=(2, 2), activation="relu", input_shape=self.input, data_format='channels_first'))
+            self.model.add(Conv2D(48, (3, 3), strides=(1, 1), activation="relu", data_format='channels_first'))
+            self.model.add(Flatten())
+            self.model.add(Dense(256, activation='relu'))
+            self.model.add(Dense(self.output, activation=None))
+
+        self.optimizer = keras.optimizers.RMSprop(lr=0.01, decay=0.0, epsilon=0.00001, rho=0.95, clipvalue=10)
+        if opt.upper() == 'ADAM':
+            self.optimizer = keras.optimizers.Adam(lr=self.lr, decay=0.0, clipvalue=10)
+        self.model.compile(loss=self.loss, optimizer=self.optimizer)
 
     def load_model(self, path):
-        self.model = keras.models.load_model(path)
+        self.model = keras.models.load_model(path, custom_objects=self.custom_objects)
 
-    def fit(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False):
+    def fit(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False, evaluate=False):
         if not double:
             _q_value = self.model.predict(obs)  # 1d array
             _max_next_q_value = np.max(target_network.predict(next_obs), 1)  # 1d array
@@ -56,7 +94,14 @@ class DQN(object):
             y = act * (rew + (1 - done) * discount * _max_next_double_q_value)[:, None]  # 2d array
             y = _q_value * (1 - act) + (act * y)
 
-        self.model.fit(obs, y, epochs=1, batch_size = len(obs), verbose=0)
+        if not evaluate:
+            self.model.fit(obs, y, epochs=1, batch_size = len(obs), verbose=0)
+        else:
+            loss = self.model.evaluate(obs, y, batch_size=len(obs), verbose=0)
+            return loss
+
+    def evaluate(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False):
+        return self.fit(obs, act, rew, next_obs, done, discount=discount, target_network=target_network, double=double, evaluate=True)
 
     def save(self, path):
         self.model.save(path)
@@ -115,7 +160,7 @@ def preprocess(raw_state, me_id, turn_number, constants):
     # halite state
     processed_state.append(csr_matrix(halite_map / constants.MAX_HALITE)) # 6
     # moving cost state
-    processed_state.append(csr_matrix(np.trunc(np.maximum(halite_map / constants.MOVE_COST_RATIO, 1) - ((halite_map == 0) * 1.)) / constants.MAX_HALITE)) # 7
+    processed_state.append(csr_matrix(np.trunc(halite_map / constants.MOVE_COST_RATIO) / constants.MAX_HALITE)) # 7
     # remaining round
     processed_state.append(csr_matrix(np.ones(ship_map.shape) * (constants.MAX_TURNS - turn_number)))  # 8
 
@@ -202,6 +247,9 @@ if __name__ == "__main__":
     # General
     parser.add_argument("--max_training_steps", default=500000, type=int, help="Total number of training steps")
     parser.add_argument("--map_size", default=32, type=int, help="map size to be played")
+    parser.add_argument("--opt", default='rmsprop', type=str, help="loss optimizer")
+    parser.add_argument("--lr", default=0.01, type=int, help="learning rate")
+    parser.add_argument("--dueling", default=1, type=int, help="use dueling network or not")
     # Arg to be passed to rl_1.py
     parser.add_argument("--epsilon_train", default=0.01, type=float, help="the value to which the agent's epsilon is eventually decayed during training")
     parser.add_argument("--epsilon_decay_period", default=250000, type=int, help="length of the epsilon decay schedule")
@@ -211,7 +259,8 @@ if __name__ == "__main__":
     parser.add_argument("--target_update_period", default=8000, type=int, help="update period for the target network")
     parser.add_argument("--replay_capacity", default=50000, type=int, help="number of transitions to keep in memory")
     parser.add_argument("--folder", default='simple_dqn', type=str, help="folder to store networks, experiences, log")
-    parser.add_argument("--double", default=0, type=int, help="use double q network or not")
+    parser.add_argument("--huber", default=1, type=int, help="use huber loss or not")
+    parser.add_argument("--double", default=1, type=int, help="use double q network or not")
     parser.add_argument("--sparse_reward", default=0, type=int, help="use sparse rewards")
 
     args = parser.parse_args()
@@ -227,6 +276,7 @@ if __name__ == "__main__":
         'training_steps': 0,
         'replay_capacity': args.replay_capacity,
         'folder': args.folder,
+        'huber': args.huber,
         'double': args.double,
         'sparse_reward': args.sparse_reward,
     }
@@ -249,11 +299,14 @@ if __name__ == "__main__":
 
     # Init q_network and target_network
     if not os.path.exists(os.path.join(_parameters['folder'], 'q_network')):
-        q_network = DQN(input=(9, map_size, map_size), output=len(actions_list))
-        target_network = DQN(input=(9, map_size, map_size), output=len(actions_list))
+        q_network = DQN(input=(9, map_size, map_size), output=len(actions_list), huber=args.huber, dueling=args.dueling, opt=args.opt)
+        target_network = DQN(input=(9, map_size, map_size), output=len(actions_list), huber=args.huber, dueling=args.dueling, opt=args.opt)
         target_network.set_weights(q_network.get_weights())
         q_network.save(os.path.join(_parameters['folder'], 'q_network'))
         target_network.save(os.path.join(_parameters['folder'], 'target_network'))
+        f = open(os.path.join(_parameters['folder'], 'episode_log.csv'), 'a')
+        f.write('avg_rewards,total_rewards,max_rewards,epsilon,avg_loss,total_loss,max_loss\n')
+        f.close()
 
     # Start experiment
     while _parameters['training_steps'] < max_training_steps:
