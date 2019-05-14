@@ -67,7 +67,7 @@ class DQN(object):
     def load_model(self, path):
         self.model = keras.models.load_model(path, custom_objects=self.custom_objects)
 
-    def fit(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False):
+    def fit(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False, evaluate=False):
         if not double:
             _q_value = self.model.predict(obs)  # 1d array
             _max_next_q_value = np.max(target_network.predict(next_obs), 1)  # 1d array
@@ -80,7 +80,14 @@ class DQN(object):
             y = act * (rew + (1 - done) * discount * _max_next_double_q_value)[:, None]  # 2d array
             y = _q_value * (1 - act) + (act * y)
 
-        self.model.fit(obs, y, epochs=1, batch_size = len(obs), verbose=0)
+        if not evaluate:
+            self.model.fit(obs, y, epochs=1, batch_size = len(obs), verbose=0)
+        else:
+            loss = self.model.evaluate(obs, y, batch_size=len(obs), verbose=0)
+            return loss
+
+    def evaluate(self, obs, act, rew, next_obs, done, discount=0.99, target_network=None, double=False):
+        return self.fit(obs, act, rew, next_obs, done, discount=discount, target_network=target_network, double=double, evaluate=True)
 
     def save(self, path):
         self.model.save(path)
@@ -241,7 +248,7 @@ if __name__ == "__main__":
     q_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt)
     target_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt)
     target_network.set_weights(q_network.get_weights())
-    episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','epsilon'])
+    episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','epsilon','avg_loss','total_loss','max_loss'])
     done = False
 
     buffer = ReplayBuffer(replay_capacity)
@@ -281,6 +288,7 @@ if __name__ == "__main__":
             state = env.reset()
             state = preprocess(state, _game)
             _reward_list = []
+            _loss_list = []
             print('----reset steps {}/{}----'.format(training_steps, max_training_steps), flush=True)
             while True:
                 # Select actions
@@ -300,12 +308,16 @@ if __name__ == "__main__":
                 buffer.add(state, action, reward, next_state, done)
                 state = next_state
 
+                _s, _a, _r, _n, _d = buffer.sample(batch_size)
+                __a = np.zeros((_a.shape[0], action_size))
+                __a[np.arange(_a.shape[0]), _a] = 1
+                _a = __a # 2d array
+
+                loss = q_network.evaluate(_s, _a, _r, _n, _d, double=double, discount=discount, target_network=target_network)
+                _loss_list.append(loss)
+
                 if len(buffer) >= min_replay_history:
                     # Fit network
-                    _s, _a, _r, _n, _d = buffer.sample(batch_size)
-                    __a = np.zeros((_a.shape[0], action_size))
-                    __a[np.arange(_a.shape[0]), _a] = 1
-                    _a = __a # 2d array
                     q_network.fit(_s, _a, _r, _n, _d, double=double, discount=discount, target_network=target_network)
 
                     # Sync target network
@@ -315,13 +327,18 @@ if __name__ == "__main__":
 
                 training_steps += 1
                 if done:
-                    print('reward: mean=%.4f\tsum=%.4f'%(np.array(_reward_list).mean(), np.array(_reward_list).sum()), flush=True)
+                    print('reward: mean=%.4f\tsum=%.4f\tloss: mean=%.4f\tsum=%.4f'%(
+                        np.array(_reward_list).mean(), np.array(_reward_list).sum(),
+                        np.array(_loss_list).mean(),np.array(_loss_list).sum()), flush=True)
                     episode_rewards = episode_rewards.append(
                         {
                             'avg_rewards' : np.array(_reward_list).mean(),
                             'total_rewards' : np.array(_reward_list).sum(),
                             'max_rewards': np.array(_reward_list).max(),
                             'epsilon': epsilon,
+                            'avg_loss': np.array(_loss_list).mean(),
+                            'total_loss': np.array(_loss_list).sum(),
+                            'max_loss': np.array(_loss_list).max(),
                         }, ignore_index=True)
                     break
 
