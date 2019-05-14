@@ -76,7 +76,8 @@ class DQN(object):
             y = _q_value * (1 - act) + (act * y)
         else:
             _q_value = self.model.predict(obs)  # 1d array
-            _max_next_action = np.argmax(_q_value, 1)  # 1d array
+            _next_q_value = self.model.predict(next_obs)  # 1d array
+            _max_next_action = np.argmax(_next_q_value, 1)  # 1d array
             _max_next_double_q_value = target_network.predict(next_obs)[np.arange(len(obs)), _max_next_action] # 1d array
             y = act * (rew + (1 - done) * discount * _max_next_double_q_value)[:, None]  # 2d array
             y = _q_value * (1 - act) + (act * y)
@@ -211,7 +212,11 @@ class PrioritizedReplayBuffer:  # stored as ( s, a, r, s_ ) in SumTree
             batch.append(data)
             idxs.append(idx)
 
-            obs_t, action, reward, obs_tp1, done = data
+            try:
+                obs_t, action, reward, obs_tp1, done = data
+            except Exception as e:
+                print(e)
+                print(data)
             obses_t.append(np.array(obs_t, copy=False))
             actions.append(np.array(action, copy=False))
             rewards.append(reward)
@@ -233,14 +238,14 @@ class PrioritizedReplayBuffer:  # stored as ( s, a, r, s_ ) in SumTree
         """Dump the replay buffer into a file.
         """
         file = open(file_path, 'wb')
-        pickle.dump(self._buffer, file, -1)
+        pickle.dump(self.tree, file, -1)
         file.close()
 
     def load(self, file_path=None):
         """Load the replay buffer from a file
         """
         file = open(file_path, 'rb')
-        self._buffer = pickle.load(file)
+        self.tree = pickle.load(file)
         file.close()
 
 
@@ -385,9 +390,15 @@ if __name__ == "__main__":
 
                 # Save experience
                 if per:
-                    error = 0
-                    error = abs(np.max(q_vals) - 0)
-                    # todo: calculate y_hat
+                    y_hat = np.max(q_vals) # this is the value predicted by network
+                    if double:
+                        _next_q_value = q_network.predict(np.array([next_state]))  # 1d array
+                        _max_next_action = np.argmax(_next_q_value, 1)  # 1d array
+                        _max_next_double_q_value = target_network.predict(np.array([next_state]))[np.arange(1), _max_next_action]  # 1d array
+                        y = reward if done else reward + discount * _max_next_double_q_value
+                    else:
+                        y = reward if done else reward + discount * np.max(target_network.predict(np.array([next_state])))
+                    error = abs(y - y_hat)
                     buffer.add(state, action, reward, next_state, done, error)
                 else:
                     buffer.add(state, action, reward, next_state, done)
