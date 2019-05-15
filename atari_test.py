@@ -12,7 +12,7 @@ from SumTree import SumTree
 
 class DQN(object):
 
-    def __init__(self, input=(11, 32, 32), output=5, lr=0.01, dueling=0, huber=0, opt='rmsprop'):
+    def __init__(self, input=(11, 32, 32), output=5, lr=0.01, dueling=0, huber=0, opt='rmsprop', clipvalue=-1.):
 
         def huber_loss(a, b, in_keras=True):
             error = a - b
@@ -30,6 +30,7 @@ class DQN(object):
         self.dueling = dueling
         self.huber = huber
         self.custom_objects = {}
+        self.clipvalue = clipvalue
 
         if huber:
             self.loss = huber_loss
@@ -60,9 +61,9 @@ class DQN(object):
             self.model.add(Dense(32, activation='relu'))
             self.model.add(Dense(self.output, activation=None))
 
-        self.optimizer = keras.optimizers.RMSprop(lr=self.lr, decay=0.0, epsilon=0.00001, rho=0.95)
+        self.optimizer = keras.optimizers.RMSprop(lr=self.lr, decay=0.0, epsilon=0.00001, rho=0.95, clipvalue=self.clipvalue)
         if opt.upper() == 'ADAM':
-            self.optimizer = keras.optimizers.Adam(lr=self.lr, decay=0.0)
+            self.optimizer = keras.optimizers.Adam(lr=self.lr, decay=0.0, clipvalue=self.clipvalue)
         self.model.compile(loss=self.loss, optimizer=self.optimizer)
 
     def load_model(self, path):
@@ -294,6 +295,7 @@ if __name__ == "__main__":
     parser.add_argument("--huber_loss", default=1, type=int, help="use huber loss function or not")
     parser.add_argument("--opt", default='rmsprop', type=str, help="loss optimizer")
     parser.add_argument("--per", default=0, type=int, help="prioritized experience replay")
+    parser.add_argument("--clipvalue", default=-1., type=float, help="gradient clipvalue")
     parser.add_argument("--eval", default=0, type=int, help="evaluation mode")
     args = parser.parse_args()
 
@@ -324,12 +326,13 @@ if __name__ == "__main__":
     dueling = args.dueling
     opt = args.opt
     per = args.per
+    clipvalue = args.clipvalue
 
     env = gym.make(_game)
     state_size = preprocess(env.reset(), _game).shape
     action_size = env.action_space.n
-    q_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt)
-    target_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt)
+    q_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt, clipvalue=clipvalue)
+    target_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt, clipvalue=clipvalue)
     target_network.set_weights(q_network.get_weights())
     episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','epsilon','avg_loss','total_loss','max_loss'])
     done = False
@@ -461,6 +464,8 @@ if __name__ == "__main__":
                 'dueling': dueling,
                 'huber_loss': args.huber_loss,
                 'opt': opt,
+                'per': per,
+                'clipvalue': clipvalue,
             }, outfile, sort_keys=True, indent=4)
 
 # eval

@@ -313,7 +313,7 @@ while True:
 
         start_time = time.time()
         f = open(_episode_log, 'a')
-        f.write('%f,%f,%f,%f,%f,%f,%f\n'%(
+        f.write('%f,%f,%f,%f,%f,%f,%f,%d\n'%(
             np.array(_info_rewards_list).mean(),
             np.array(_info_rewards_list).sum(),
             np.array(_info_rewards_list).max(),
@@ -321,6 +321,7 @@ while True:
             np.array(_info_loss_list).mean(),
             np.array(_info_loss_list).sum(),
             np.array(_info_loss_list).max(),
+            game.turn_number - 2
         ))
         f.close()
         logging.debug('{} seconds to write episode log'.format(time.time() - start_time))

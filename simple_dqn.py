@@ -1,11 +1,13 @@
 from hlt_custom import commands
-import random, time, os, sys, subprocess, logging, datetime, argparse, time
+import os, subprocess, datetime, argparse, time, json
 import numpy as np
 from scipy.sparse import csr_matrix
 import keras
 from keras.models import Sequential, Model
-from keras.layers import Dense, Conv2D, Flatten, Input, Add, Subtract, Lambda, merge, Multiply
+from keras.layers import Dense, Conv2D, Flatten, Input, Lambda
 import keras.backend as K
+
+# python simple_dqn.py --max_training_steps 100000 --map_size 4 --lr 0.01 --clipvalue 1 --epsilon_decay_period 50000 --target_update_period 2000 --sparse_reward 1 --folder simple_dddqn_4x4_clip1.0
 
 # todo;
 # error when saving too large numpy file, temp sol: restrict smaller replay capacity
@@ -27,7 +29,7 @@ import keras.backend as K
 ###########
 class DQN(object):
 
-    def __init__(self, input=(11, 32, 32), output=5, lr=0.01, dueling=0, huber=0, opt='rmsprop'):
+    def __init__(self, input=(11, 32, 32), output=5, lr=0.01, dueling=0, huber=0, opt='rmsprop', clipvalue=-1.):
 
         def huber_loss(a, b, in_keras=True):
             error = a - b
@@ -46,6 +48,7 @@ class DQN(object):
         self.lr = lr
         self.dueling = dueling
         self.huber = huber
+        self.clipvalue = clipvalue
         self.custom_objects = {}
 
         if huber:
@@ -73,9 +76,9 @@ class DQN(object):
             self.model.add(Dense(256, activation='relu'))
             self.model.add(Dense(self.output, activation=None))
 
-        self.optimizer = keras.optimizers.RMSprop(lr=0.01, decay=0.0, epsilon=0.00001, rho=0.95, clipvalue=10)
+        self.optimizer = keras.optimizers.RMSprop(lr=0.01, decay=0.0, epsilon=0.00001, rho=0.95, clipvalue=self.clipvalue)
         if opt.upper() == 'ADAM':
-            self.optimizer = keras.optimizers.Adam(lr=self.lr, decay=0.0, clipvalue=10)
+            self.optimizer = keras.optimizers.Adam(lr=self.lr, decay=0.0, clipvalue=self.clipvalue)
         self.model.compile(loss=self.loss, optimizer=self.optimizer)
 
     def load_model(self, path):
@@ -89,8 +92,9 @@ class DQN(object):
             y = _q_value * (1 - act) + (act * y)
         else:
             _q_value = self.model.predict(obs)  # 1d array
-            _max_next_action = np.argmax(_q_value, 1)  # 1d array
-            _max_next_double_q_value = target_network.predict(next_obs)[np.arange(len(obs)), _max_next_action] # 1d array
+            _next_q_value = self.model.predict(next_obs)  # 1d array
+            _max_next_action = np.argmax(_next_q_value, 1)  # 1d array
+            _max_next_double_q_value = target_network.predict(next_obs)[np.arange(len(obs)), _max_next_action]  # 1d array
             y = act * (rew + (1 - done) * discount * _max_next_double_q_value)[:, None]  # 2d array
             y = _q_value * (1 - act) + (act * y)
 
@@ -248,8 +252,9 @@ if __name__ == "__main__":
     parser.add_argument("--max_training_steps", default=500000, type=int, help="Total number of training steps")
     parser.add_argument("--map_size", default=32, type=int, help="map size to be played")
     parser.add_argument("--opt", default='rmsprop', type=str, help="loss optimizer")
-    parser.add_argument("--lr", default=0.01, type=int, help="learning rate")
+    parser.add_argument("--lr", default=0.01, type=float, help="learning rate")
     parser.add_argument("--dueling", default=1, type=int, help="use dueling network or not")
+    parser.add_argument("--clipvalue", default=-1., type=float, help="gradient clipvalue")
     # Arg to be passed to rl_1.py
     parser.add_argument("--epsilon_train", default=0.01, type=float, help="the value to which the agent's epsilon is eventually decayed during training")
     parser.add_argument("--epsilon_decay_period", default=250000, type=int, help="length of the epsilon decay schedule")
@@ -305,8 +310,30 @@ if __name__ == "__main__":
         q_network.save(os.path.join(_parameters['folder'], 'q_network'))
         target_network.save(os.path.join(_parameters['folder'], 'target_network'))
         f = open(os.path.join(_parameters['folder'], 'episode_log.csv'), 'a')
-        f.write('avg_rewards,total_rewards,max_rewards,epsilon,avg_loss,total_loss,max_loss\n')
+        f.write('avg_rewards,total_rewards,max_rewards,epsilon,avg_loss,total_loss,max_loss,turns\n')
         f.close()
+
+    # Dump config
+    with open(os.path.join(_parameters['folder'], 'config'), 'a') as outfile:
+        json.dump({
+            'max_training_steps': args.max_training_steps,
+            'map_size': args.map_size,
+            'opt': args.opt,
+            'lr': args.lr,
+            'dueling': args.dueling,
+            'clipvalue': args.clipvalue,
+            'epsilon_train': args.epsilon_train,
+            'epsilon_decay_period': args.epsilon_decay_period,
+            'batch_size': args.batch_size,
+            'discount': args.discount,
+            'min_replay_history': args.min_replay_history,
+            'target_update_period': args.target_update_period,
+            'replay_capacity': args.replay_capacity,
+            'folder': args.folder,
+            'huber': args.huber,
+            'double': args.double,
+            'sparse_reward': args.sparse_reward,
+        }, outfile, sort_keys=True, indent=4)
 
     # Start experiment
     while _parameters['training_steps'] < max_training_steps:
