@@ -242,12 +242,12 @@ while True:
             _samples_next_state = _samples_next_state[:, 0:-1, :, :] # 4d array of shape batch size x no. of features map x map_size x map_size, ignore ship id state
 
             # Evaluate loss
-            loss = q_network.evaluate(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, double=double, target_network=target_network)
+            loss = q_network.evaluate(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, discount=discount, double=double, target_network=target_network)
             _info_loss_list.append(loss)
 
             if ship_replay_index > min_replay_history:
                 # Fit the network
-                q_network.fit(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, double=double, target_network=target_network)
+                q_network.fit(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, discount=discount, double=double, target_network=target_network)
 
                 # Update target network
                 if training_steps % target_update_period == 0:
