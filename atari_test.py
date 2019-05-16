@@ -375,6 +375,7 @@ if __name__ == "__main__":
             state = preprocess(state, _game)
             _reward_list = []
             _loss_list = []
+            _turns = 0
             print('----reset steps {}/{}----'.format(training_steps, max_training_steps), flush=True)
             while True:
                 # Select actions
@@ -387,6 +388,7 @@ if __name__ == "__main__":
 
                 # Run experiment
                 next_state, reward, done, _ = env.step(action)
+                _turns += 1
                 next_state = preprocess(next_state, _game)
                 _reward_list.append(reward)
                 # print(reward, flush=True)
@@ -438,6 +440,7 @@ if __name__ == "__main__":
                             'avg_loss': np.array(_loss_list).mean(),
                             'total_loss': np.array(_loss_list).sum(),
                             'max_loss': np.array(_loss_list).max(),
+                            'turns': _turns,
                         }, ignore_index=True)
                     break
 
