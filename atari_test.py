@@ -395,7 +395,7 @@ if __name__ == "__main__":
 
                 # Save experience
                 if per:
-                    y_hat = np.max(q_vals) # this is the value predicted by network
+                    y_hat = q_vals[0][action] # this is the value predicted by network
                     if double:
                         _next_q_value = q_network.predict(np.array([next_state]))  # 1d array
                         _max_next_action = np.argmax(_next_q_value, 1)  # 1d array
