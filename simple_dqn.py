@@ -1,11 +1,12 @@
 from hlt_custom import commands
-import os, subprocess, datetime, argparse, time, json
+import os, subprocess, datetime, argparse, time, json, random, pickle, h5py
 import numpy as np
 from scipy.sparse import csr_matrix
 import keras
 from keras.models import Sequential, Model
 from keras.layers import Dense, Conv2D, Flatten, Input, Lambda
 import keras.backend as K
+from SumTree import SumTree
 
 # python simple_dqn.py --max_training_steps 100000 --map_size 4 --lr 0.01 --clipvalue 1 --epsilon_decay_period 50000 --target_update_period 2000 --sparse_reward 1 --folder simple_dddqn_4x4_clip1.0
 
@@ -120,9 +121,209 @@ class DQN(object):
         return self.model.get_weights()
 
 
+class StateBuffer(object):
+    def __init__(self, max_size, map_size=4, file='state_replay.h5', idx_file='state_replay_index.npy'):
+        """Simple replay buffer for storing sampled DQN (s, a, s', r) transitions as tuples.
+
+        :param size: Maximum size of the replay buffer.
+        """
+        self._max_size = max_size
+        self._map_size = map_size
+        self._file = file
+        self._idx_file = idx_file
+
+        if not os.path.exists(self._file):
+            self._buffer = h5py.File(self._file, 'w')
+            self._buffer.create_dataset('state', (self._max_size, 2, 5, self._map_size, self._map_size))
+            self._idx = 0
+            self._norm_idx = 0
+            np.save(self._idx_file, self._idx)
+        else:
+            self._idx = np.load(self._idx_file)
+            self._norm_idx = self._idx % self._max_size
+            self._buffer = h5py.File(self._file, 'r+')
+
+    def __len__(self):
+        return min(self._max_size, self._idx)
+
+    def add(self, obs_t, obs_tp1):
+        """
+        Add a new sample to the replay buffer.
+        :param obs_t: observation at time t
+        :param obs_tp1: observation at time t + 1
+        """
+        data = np.array([obs_t, obs_tp1])
+        self._buffer['state'][self._norm_idx] = data
+        self._idx += 1
+        self._norm_idx = self._idx % self._max_size
+        np.save(self._idx_file, self._idx)
+
+    def sample(self, batch_size):
+        """Sample a batch of transition tuples.
+
+        :param batch_size: Number of sampled transition tuples.
+        :return: Tuple of transitions.
+        """
+        idxes = [random.randint(0, min(self._max_size, self._idx) - 1) for _ in range(batch_size)]
+        return self.get(idxes)
+
+    def get_idx(self):
+        return self._idx
+
+    def get_norm_idx(self):
+        return self._norm_idx
+
+    def get(self, index):
+        _unique, _inverse = np.unique(index, return_inverse=True)
+        states = self._buffer['state'][list(_unique)]
+        states = states[_inverse]
+        return states[:,0,], states[:,1]
+
+    def close(self):
+        self._buffer.close()
+
+
+# https://github.com/rlcode/per/blob/master/prioritized_memory.py
+class PrioritizedReplayBuffer:  # stored as ( s, a, r, s_ ) in SumTree
+    e = 0.01
+    a = 0.6
+    beta = 0.4
+    beta_increment_per_sampling = 0.001
+
+    def __init__(self, capacity):
+        self.tree = SumTree(capacity)
+        self.capacity = capacity
+
+    def __len__(self):
+        return self.tree.n_entries
+
+    def _get_priority(self, error):
+        return (error + self.e) ** self.a
+
+    def add(self, state_id, ship_id, act, rew, don, error):
+        p = self._get_priority(error)
+        self.tree.add(p, (state_id, ship_id, act, rew, don))
+
+    def sample(self, n, state_buffer):
+        batch = []
+        idxs = []
+        segment = self.tree.total() / n
+        priorities = []
+        state_ids, ship_ids, actions, rewards, dones = [], [], [], [], []
+
+        self.beta = np.min([1., self.beta + self.beta_increment_per_sampling])
+
+        for i in range(n):
+            a = segment * i
+            b = segment * (i + 1)
+
+            s = random.uniform(a, b)
+            (idx, p, data) = self.tree.get(s)
+            priorities.append(p)
+            batch.append(data)
+            idxs.append(idx)
+
+            try:
+                state_id, ship_id, action, reward, done = data
+            except Exception as e:
+                print(e)
+                print(data)
+            state_ids.append(state_id)
+            actions.append(action)
+            rewards.append(reward)
+            ship_ids.append(ship_id)
+            dones.append(done)
+
+        sampling_probabilities = priorities / self.tree.total()
+        is_weight = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
+        is_weight /= is_weight.max()
+
+        states, next_states = state_buffer.get(state_ids)
+        _s1, _s2, _s3, _s4 = states.shape
+        centered_states, centered_next_states = np.zeros((_s1, _s2 - 1, _s3, _s4)), np.zeros((_s1, _s2 - 1, _s3, _s4))
+
+        for i in range(n):
+            centered_states[i] = center_state_for_ship(states[i][0:-1], states[i][-1], ship_ids[i])
+            if not dones[i]:
+                centered_next_states[i] = center_state_for_ship(next_states[i][0:-1], next_states[i][-1], ship_ids[i])
+
+        return np.array(centered_states), np.array(actions), np.array(rewards), np.array(centered_next_states), np.array(dones)
+
+    def update(self, idx, error):
+        p = self._get_priority(error)
+        self.tree.update(idx, p)
+
+    def dump(self, file_path=None):
+        """Dump the replay buffer into a file.
+        """
+        file = open(file_path, 'wb')
+        pickle.dump(self.tree, file, -1)
+        file.close()
+
+    def load(self, file_path=None):
+        """Load the replay buffer from a file
+        """
+        file = open(file_path, 'rb')
+        self.tree = pickle.load(file)
+        file.close()
+
+
 ###################
 # Custom function #
 ###################
+def preprocess_dense(raw_state, me_id, turn_number, constants):
+    """
+    return processed state
+    note the last one must be ship_id state
+    note using sparse matrix could reduce >50% size of replay e.g. from 206mb to 62mb for 1100 records in state_replay.npy
+    :param raw_state: dictionary of 2d ndarray
+    :param me_id: int
+    :return: 1d ndarray of dtype object, store nxn csr_matrix
+    """
+    halite_map = raw_state['halite_map']
+    ship_halite_map = raw_state['ship_halite_map']
+    ship_map = raw_state['ship_map']
+    ship_id_map = raw_state['ship_id_map']
+    shipyard_map = raw_state['shipyard_map']
+    dropoff_map = raw_state['dropoff_map']
+
+    try:
+        constants.MAX_HALITE
+    except:
+        class _constants():
+            def __init__(self):
+                self.MAX_HALITE = 1000
+                self.MOVE_COST_RATIO = 10
+        constants = _constants()
+
+    processed_state = []
+    # one hot ship state
+    # processed_state.append(((ship_map == me_id) * 1.)) # 0
+    # processed_state.append((((ship_map != me_id) & (ship_map != -1)) * 1.)) # 1
+    # one hot shipyard state
+    processed_state.append(((shipyard_map == me_id) * 1.)) # 1
+    # processed_state.append((((shipyard_map != me_id) & (shipyard_map != -1)) * 1.)) # 3
+    # one hot dropoff state
+    # processed_state.append(((dropoff_map == me_id) * 1.))
+    # processed_state.append((((dropoff_map != me_id) & (dropoff_map != -1)) * 1.))
+    # ship halite state
+    processed_state.append(((ship_map == me_id) * ship_halite_map / constants.MAX_HALITE)) # 2
+    # processed_state.append((processed_state[1] * ship_halite_map / constants.MAX_HALITE)) # 5
+    # halite state
+    processed_state.append((halite_map / constants.MAX_HALITE)) # 3
+    # moving cost state
+    processed_state.append((np.trunc(halite_map / constants.MOVE_COST_RATIO) / constants.MAX_HALITE)) # 4
+    # remaining round
+    # processed_state.append((np.ones(ship_map.shape) * (constants.MAX_TURNS - turn_number)))  # 8
+
+    # todo add inspired halite / ship state / move cost
+
+    # ship id state (this is used to center the matrix for different ship)
+    processed_state.append(((-np.ones(ship_id_map.shape) * (ship_map != me_id)) + ship_id_map * (ship_map == me_id))) # This is not input to q_network
+
+    return np.array(processed_state)
+
+
 def preprocess(raw_state, me_id, turn_number, constants):
     """
     return processed state
@@ -234,7 +435,7 @@ def get_halite_command(map_size=32, turn_limit=300, replay_directory='', paramet
         cmd.append("-vvv")
     cmd.append("python3 8_.py --MAX_SHIP_ON_MAP -1 --COLLISION_2P 0 --MAKE_DROPOFF_GAIN_COST_RATIO 999 --log_directory %s" % replay_directory)
 
-    script = "python3 rl_1.py"
+    script = "python3 rl_2.py"
     for p in parameters.keys():
         script += ' --%s %s' % (p, parameters[p])
     script += ' --log_directory %s' % replay_directory
@@ -304,13 +505,13 @@ if __name__ == "__main__":
 
     # Init q_network and target_network
     if not os.path.exists(os.path.join(_parameters['folder'], 'q_network')):
-        q_network = DQN(input=(9, map_size, map_size), output=len(actions_list), huber=args.huber, dueling=args.dueling, opt=args.opt)
-        target_network = DQN(input=(9, map_size, map_size), output=len(actions_list), huber=args.huber, dueling=args.dueling, opt=args.opt)
+        q_network = DQN(input=(4, map_size, map_size), output=len(actions_list), huber=args.huber, dueling=args.dueling, opt=args.opt)
+        target_network = DQN(input=(4, map_size, map_size), output=len(actions_list), huber=args.huber, dueling=args.dueling, opt=args.opt)
         target_network.set_weights(q_network.get_weights())
         q_network.save(os.path.join(_parameters['folder'], 'q_network'))
         target_network.save(os.path.join(_parameters['folder'], 'target_network'))
         f = open(os.path.join(_parameters['folder'], 'episode_log.csv'), 'a')
-        f.write('avg_rewards,total_rewards,max_rewards,epsilon,avg_loss,total_loss,max_loss,turns\n')
+        f.write('avg_rewards,total_rewards,max_rewards,min_rewards,epsilon,avg_loss,total_loss,max_loss,min_loss,turns,avg_q,total_q,max_q,min_q\n')
         f.close()
 
     # Dump config
