@@ -334,7 +334,7 @@ if __name__ == "__main__":
     q_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt, clipvalue=clipvalue)
     target_network = DQN(state_size, action_size, lr=lr, dueling=dueling, huber=args.huber_loss, opt=opt, clipvalue=clipvalue)
     target_network.set_weights(q_network.get_weights())
-    episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','epsilon','avg_loss','total_loss','max_loss'])
+    episode_rewards = pd.DataFrame([], columns=['avg_rewards','total_rewards','max_rewards','min_rewards','epsilon','avg_loss','total_loss','max_loss','min_loss','turns','avg_q','total_q','max_q','min_q'])
     done = False
 
     buffer = ReplayBuffer(replay_capacity) if not per else PrioritizedReplayBuffer(replay_capacity)
@@ -375,6 +375,7 @@ if __name__ == "__main__":
             state = preprocess(state, _game)
             _reward_list = []
             _loss_list = []
+            _q_list = []
             _turns = 0
             print('----reset steps {}/{}----'.format(training_steps, max_training_steps), flush=True)
             while True:
@@ -385,6 +386,7 @@ if __name__ == "__main__":
                     action = np.random.choice(action_size)
                 else:
                     action = np.argmax(q_vals)
+                _q_list.append(q_vals[0][action])
 
                 # Run experiment
                 next_state, reward, done, _ = env.step(action)
@@ -395,7 +397,7 @@ if __name__ == "__main__":
 
                 # Save experience
                 if per:
-                    y_hat = np.max(q_vals) # this is the value predicted by network
+                    y_hat = q_vals[0][action] # this is the value predicted by network if took action
                     if double:
                         _next_q_value = q_network.predict(np.array([next_state]))  # 1d array
                         _max_next_action = np.argmax(_next_q_value, 1)  # 1d array
@@ -410,6 +412,7 @@ if __name__ == "__main__":
                 state = next_state
 
                 _s, _a, _r, _n, _d = buffer.sample(batch_size)
+                # convert action from 1d array to one hot 2d array
                 __a = np.zeros((_a.shape[0], action_size))
                 __a[np.arange(_a.shape[0]), _a] = 1
                 _a = __a # 2d array
@@ -428,19 +431,26 @@ if __name__ == "__main__":
 
                 training_steps += 1
                 if done:
-                    print('reward: mean=%.4f\tsum=%.4f\tloss: mean=%.4f\tsum=%.4f'%(
+                    print('reward: mean=%.4f\tsum=%.4f\tq: mean=%.4f\tsum=%.4f\tloss: mean=%.4f\tsum=%.4f'%(
                         np.array(_reward_list).mean(), np.array(_reward_list).sum(),
+                        np.array(_q_list).mean(), np.array(_q_list).sum(),
                         np.array(_loss_list).mean(),np.array(_loss_list).sum()), flush=True)
                     episode_rewards = episode_rewards.append(
                         {
                             'avg_rewards' : np.array(_reward_list).mean(),
                             'total_rewards' : np.array(_reward_list).sum(),
                             'max_rewards': np.array(_reward_list).max(),
+                            'min_rewards': np.array(_reward_list).min(),
                             'epsilon': epsilon,
                             'avg_loss': np.array(_loss_list).mean(),
                             'total_loss': np.array(_loss_list).sum(),
                             'max_loss': np.array(_loss_list).max(),
+                            'min_loss': np.array(_loss_list).min(),
                             'turns': _turns,
+                            'avg_q': np.array(_q_list).mean(),
+                            'total_q': np.array(_q_list).sum(),
+                            'max_q': np.array(_q_list).max(),
+                            'min_q': np.array(_q_list).min(),
                         }, ignore_index=True)
                     break
 
@@ -497,7 +507,7 @@ if __name__ == "__main__":
 
 # i=0
 # for df in [default, huber, double_huber, double]:
-#     (df.groupby(df.index // 10).mean())['avg_rewards'].plot(label=['default','huber','double_huber','double'][i])
+#     (df.rolling(5).mean()['avg_rewards'].plot(label=['default','huber','double_huber','double'][i])
 #     i+=1
 # plt.legend()
 # plt.show()
