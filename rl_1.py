@@ -208,14 +208,10 @@ while True:
 
         # Append replay
         start_time = time.time()
-        # _ = np.array([[state_replay.shape[0] - 1, id, actions[id], rewards[id], terminations[id]] for id in actions.keys()], dtype=object)
-        # ship_replay = _ if len(ship_replay) == 0 else np.append(ship_replay, _, axis=0)
         _ = np.array([[int(_norm_state_replay_index), id, actions[id], rewards[id], terminations[id]] for id in actions.keys()], dtype=object)[0]
         ship_replay[_norm_ship_replay_index] = _
         ship_replay_index += 1
         _norm_ship_replay_index = ship_replay_index % ship_replay.shape[0]
-        # _ = np.array([[prev_processed_state, processed_state]])
-        # state_replay = _ if len(state_replay) == 0 else np.append(state_replay, _, axis=0)
         _ = np.array([prev_processed_state, processed_state])
         state_replay[_norm_state_replay_index] = _
         state_replay_index += 1
@@ -231,6 +227,7 @@ while True:
             _samples_actions = np.array(list(ship_replay[_samples_ship_index, 2]), dtype=int)  # 2d array
             _samples_rewards = ship_replay[_samples_ship_index, 3].astype(np.float64) # 1d array
             _samples_termination = ship_replay[_samples_ship_index, 4].astype(int) # 1d array
+            _samples_ship_id = ship_replay[_samples_ship_index, 1].astype(int) # 1d array
             _samples_state_index = ship_replay[_samples_ship_index, 0].astype(int)
             _samples_state = state_replay[_samples_state_index, 0]
             _samples_next_state = state_replay[_samples_state_index, 1]
@@ -238,8 +235,15 @@ while True:
                 # transform 2d array of sparse matrix to 4d array
                 _samples_state = np.array([c.toarray() for r in _samples_state for c in r ]).reshape(*_samples_state.shape, *_samples_state[0][0].shape)
                 _samples_next_state = np.array([c.toarray() for r in _samples_next_state for c in r]).reshape(*_samples_next_state.shape, *_samples_next_state[0][0].shape)
+            _samples_state_ship_id_map = _samples_state[:, -1, :, :]
             _samples_state = _samples_state[:, 0:-1, :, :] # 4d array of shape batch size x no. of features map x map_size x map_size, ignore ship id state
+            _samples_next_state_ship_id_map = _samples_next_state[:, -1, :, :]
             _samples_next_state = _samples_next_state[:, 0:-1, :, :] # 4d array of shape batch size x no. of features map x map_size x map_size, ignore ship id state
+
+            for i in range(batch_size):
+                _samples_state[i] = center_state_for_ship(_samples_state[i], _samples_state_ship_id_map[i], _samples_ship_id[i])
+                if _samples_termination[i]:
+                    _samples_next_state[i] = center_state_for_ship(_samples_next_state[i], _samples_next_state_ship_id_map[i], _samples_ship_id[i])
 
             # Evaluate loss
             loss = q_network.evaluate(_samples_state, _samples_actions, _samples_rewards, _samples_next_state, _samples_termination, discount=discount, double=double, target_network=target_network)
